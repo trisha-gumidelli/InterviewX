@@ -13,23 +13,55 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 
 const GROQ_BASE = 'https://api.groq.com/openai/v1';
 
+// Model fallback chain: fast/high-limit first, powerful as backup
+const MODEL_CHAIN = [
+  'llama-3.1-8b-instant',      // 500K TPD — primary (fast)
+  'gemma2-9b-it',              // 250K TPD — fallback 1
+  'llama3-8b-8192',            // 500K TPD — fallback 2
+  'llama-3.3-70b-versatile',   // 100K TPD — last resort (powerful)
+];
+
 async function groqChat(messages, opts = {}) {
-  const res = await fetch(`${GROQ_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.GROK_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
-      messages,
-      temperature: opts.temperature ?? 0.3,
-      max_tokens: opts.max_tokens ?? 1200
-    })
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error?.message || 'Groq API error');
-  return data.choices[0].message.content;
+  const models = opts.models || MODEL_CHAIN;
+  let lastError;
+
+  for (const model of models) {
+    try {
+      const res = await fetch(`${GROQ_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.GROK_API_KEY}`
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: opts.temperature ?? 0.3,
+          max_tokens: opts.max_tokens ?? 1200
+        })
+      });
+      const data = await res.json();
+
+      // On rate limit, try next model in chain
+      if (res.status === 429) {
+        console.warn(`Rate limit on ${model}, trying next model...`);
+        lastError = new Error(data.error?.message || 'Rate limited');
+        continue;
+      }
+
+      if (!res.ok) throw new Error(data.error?.message || 'Groq API error');
+      console.log(`✓ Used model: ${model}`);
+      return data.choices[0].message.content;
+    } catch (err) {
+      if (err.message?.includes('Rate limit') || err.message?.includes('rate_limit')) {
+        console.warn(`Rate limit on ${model}, trying next...`);
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError || new Error('All models exhausted');
 }
 
 function parseJSON(text) {
