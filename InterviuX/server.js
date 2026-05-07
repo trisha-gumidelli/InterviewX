@@ -13,12 +13,13 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 
 const GROQ_BASE = 'https://api.groq.com/openai/v1';
 
-// Model fallback chain: fast/high-limit first, powerful as backup
+// Model fallback chain — all with high separate TPD limits
 const MODEL_CHAIN = [
-  'llama-3.1-8b-instant',      // 500K TPD — primary (fast)
-  'gemma2-9b-it',              // 250K TPD — fallback 1
-  'llama3-8b-8192',            // 500K TPD — fallback 2
-  'llama-3.3-70b-versatile',   // 100K TPD — last resort (powerful)
+  'llama-3.1-8b-instant',    // 500K TPD
+  'llama3-8b-8192',          // 500K TPD
+  'gemma2-9b-it',            // 250K TPD
+  'mixtral-8x7b-32768',      // 500K TPD
+  'gemma-7b-it',             // 250K TPD
 ];
 
 async function groqChat(messages, opts = {}) {
@@ -40,28 +41,38 @@ async function groqChat(messages, opts = {}) {
           max_tokens: opts.max_tokens ?? 1200
         })
       });
+
       const data = await res.json();
 
-      // On rate limit, try next model in chain
-      if (res.status === 429) {
-        console.warn(`Rate limit on ${model}, trying next model...`);
-        lastError = new Error(data.error?.message || 'Rate limited');
+      // Skip to next model on ANY rate limit or server error
+      if (res.status === 429 || res.status === 503 || res.status === 500) {
+        console.warn(`⚠ ${model} returned ${res.status}, trying next...`);
+        lastError = new Error(data.error?.message || `${model} unavailable`);
         continue;
       }
 
-      if (!res.ok) throw new Error(data.error?.message || 'Groq API error');
+      // Skip on model-not-found or deactivated
+      if (res.status === 404 || res.status === 400) {
+        console.warn(`⚠ ${model} not available (${res.status}), trying next...`);
+        lastError = new Error(`${model} not available`);
+        continue;
+      }
+
+      if (!res.ok) {
+        console.warn(`⚠ ${model} error ${res.status}, trying next...`);
+        lastError = new Error(data.error?.message || 'API error');
+        continue;
+      }
+
       console.log(`✓ Used model: ${model}`);
       return data.choices[0].message.content;
     } catch (err) {
-      if (err.message?.includes('Rate limit') || err.message?.includes('rate_limit')) {
-        console.warn(`Rate limit on ${model}, trying next...`);
-        lastError = err;
-        continue;
-      }
-      throw err;
+      console.warn(`⚠ ${model} threw: ${err.message}, trying next...`);
+      lastError = err;
+      continue;
     }
   }
-  throw lastError || new Error('All models exhausted');
+  throw new Error('API rate limit reached across all models. Please wait 1-2 minutes and try again, or add a fresh GROK_API_KEY in .env');
 }
 
 function parseJSON(text) {
