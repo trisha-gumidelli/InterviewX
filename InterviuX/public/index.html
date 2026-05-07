@@ -1163,10 +1163,8 @@ function startMic() {
       document.getElementById('paceLabel').style.color = pace === 'Good' ? 'var(--green)' : 'var(--yellow)';
     }
     document.getElementById('transcriptText').textContent = state.transcript + interim;
-    // Mirror to textarea if empty
-    if (!document.getElementById('answerInput').value.trim()) {
-      document.getElementById('answerInput').value = state.transcript + interim;
-    }
+    // Always sync transcript to answer textarea while recording
+    document.getElementById('answerInput').value = state.transcript + interim;
   };
 
   recognition.onerror = () => { stopMic(); };

@@ -122,8 +122,8 @@ Seniority must be one of: Junior, Mid, Senior, Staff, Principal
 Domain must be one of: Backend, Frontend, Full-Stack, Data Science, ML/AI, DevOps, QA, Product, Embedded, Mobile
 
 Resume:
-${resumeText.substring(0, 5000)}`
-    }], { temperature: 0.2, max_tokens: 1500 });
+${resumeText.substring(0, 3000)}`
+    }], { temperature: 0.2, max_tokens: 900 });
 
     const analysis = parseJSON(content);
     res.json({ success: true, analysis, resumeText: resumeText.substring(0, 3000) });
@@ -140,48 +140,14 @@ app.post('/job-recommendations', async (req, res) => {
 
     const content = await groqChat([{
       role: 'user',
-      content: `You are a job market intelligence system. Generate realistic, currently-available job recommendations for this candidate.
+      content: `Generate 6 realistic job recommendations as JSON for a ${seniority || 'Mid'} ${domain || 'Backend'} candidate.
+Skills: ${(skills || []).slice(0, 6).join(', ')}. Target roles: ${(roles || []).slice(0, 2).join(', ')}.
 
-Candidate Profile:
-- Target Roles: ${(roles || []).join(', ')}
-- Key Skills: ${(skills || []).slice(0, 8).join(', ')}
-- Seniority: ${seniority || 'Mid'}
-- Domain: ${domain || 'Backend'}
-- Years of Experience: ${years_experience || 2}
+Respond ONLY in this JSON format:
+{"jobs":[{"id":1,"title":"","company":"","company_logo_color":"#hex","location":"City (Remote/Hybrid)","salary_range":"$X-$Y","match_score":85,"why_it_fits":"1 sentence","required_skills":["s1","s2"],"missing_skills":["s1"],"job_type":"Full-time","experience_required":"X-Y years","posted_days_ago":3}]}
 
-Generate exactly 6 realistic job postings that this candidate can realistically apply for RIGHT NOW. Use real company names.
-
-Respond ONLY in valid JSON:
-{
-  "jobs": [
-    {
-      "id": 1,
-      "title": "Senior Backend Engineer",
-      "company": "Stripe",
-      "company_logo_color": "#635BFF",
-      "location": "San Francisco, CA (Hybrid)",
-      "salary_range": "$160K - $220K",
-      "match_score": 92,
-      "why_it_fits": "Your Python and distributed systems experience aligns perfectly with Stripe's payments infrastructure team",
-      "required_skills": ["Python", "Go", "PostgreSQL", "Kubernetes"],
-      "missing_skills": ["Go"],
-      "job_type": "Full-time",
-      "experience_required": "4-6 years",
-      "posted_days_ago": 2,
-      "department": "Platform Engineering",
-      "interview_difficulty": "High"
-    }
-  ]
-}
-
-Requirements:
-- Use real companies: Google, Meta, Stripe, Uber, Airbnb, Netflix, Databricks, Figma, Notion, Linear, Vercel, Shopify, etc.
-- Match the seniority level in job title and requirements
-- Salary ranges should be realistic for 2025
-- match_score should reflect genuine skill alignment (60-95 range)
-- Sort by match_score descending
-- company_logo_color should be the brand's primary color hex code`
-    }], { temperature: 0.6, max_tokens: 2500 });
+Rules: real companies (Google/Stripe/Meta/Uber/Figma/Notion/Vercel/Shopify/etc), sort by match_score desc, scores 60-95.`
+    }], { temperature: 0.5, max_tokens: 1200 });
 
     const result = parseJSON(content);
     res.json({ success: true, jobs: result.jobs || [] });
