@@ -1,21 +1,21 @@
-# InterviuX — AI-Powered Mock Interview Platform
+# InterviuX — Agentic AI Mock Interview Platform
 
-> Intelligent agentic mock interview platform that uses your resume to infer target roles and simulates adaptive, multimodal interview sessions.
+> Intelligent agentic mock interview platform that processes resumes to infer target roles and simulates adaptive, multimodal interview sessions with real-world job matching.
 
-## Features
+## 🚀 Advanced Features (Hackathon Requirements)
 
 | Module | Description |
 |---|---|
-| **Resume Analysis** | Upload PDF → AI extracts skills, experience, seniority, infers best-fit roles |
-| **Job Recommendations** | AI-curated job listings matched to your resume with salary ranges and skill gap analysis |
-| **Adaptive Interview Agent** | Dynamically generates questions (Technical / Behavioral / System Design / Coding) and adjusts difficulty based on performance |
-| **Audio Intelligence** | Real-time speech transcription, filler word detection, pace analysis, LLM communication scoring |
-| **Visual Intelligence** | face-api.js webcam analysis — eye contact, facial expressions, engagement and stress indicators |
-| **Multimodal Scoring** | Technical + Communication + Confidence scores per answer and in final report |
-| **AI Coaching Report** | Hire recommendation, executive summary, 30-day action plan |
-| **Performance History** | LocalStorage session tracking to monitor improvement over time |
+| **Resume Analysis** | Upload PDF → AI extracts skills, experience, seniority, and infers best-fit roles. |
+| **Real Job Aggregation** | **NEW:** Integrates with **Remotive API** to fetch real, live job postings matched to your profile with direct apply links. |
+| **Adaptive Agent** | **NEW:** Multi-phase orchestration (**Warm-up → Core → Deep-dive**). Agent dynamically pivots difficulty based on consecutive performance. |
+| **Deep Audio Intel** | **NEW:** Uses Web Audio API for **Pitch Variation** (expressiveness) and **Hesitation/Pause detection** (>1.2s silence). |
+| **Visual Intelligence** | **NEW:** Includes **Posture Detection** (Slouching/Off-center detection) alongside eye-contact and expression analysis via `face-api.js`. |
+| **Encouragement Flow** | **NEW:** AI detects low confidence/scores and provides real-time encouragement banners to improve candidate morale. |
+| **Multimodal Scoring** | Technical (Strict LLM Evaluation + Pre-flight Filter) + Communication (Audio/Speech) + Confidence (Visual/Posture). |
+| **AI Coaching Report** | Hire recommendation, executive summary, technical/comm assessments, strengths/gaps analysis, action plan, and curated resources. |
 
-## Setup
+## 🛠 Setup
 
 ### Prerequisites
 - Node.js 18+
@@ -34,34 +34,21 @@ npm start
 
 Open **http://localhost:3000**
 
-### Environment Variables
+## 🏗 Architecture
 
-```
-GROK_API_KEY=your_groq_api_key_here
-PORT=3000
-```
+InterviuX uses an **Agentic Orchestration** model:
+1. **The Profiler:** Analyzes resume and queries live job markets.
+2. **The Interviewer:** A phased state-machine (Warmup, Core, Deep-dive) that adapts difficulty in real-time.
+3. **The Multimodal Analyzer:** Simultaneously processes Video (Face/Posture), Audio (Pitch/Hesitation), and Text (Keywords/Logic).
+4. **The Coach:** Aggregates all signals into a comprehensive feedback report.
 
-## API Endpoints
+## 📊 Evaluation Rubric
 
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/analyze` | Parse resume PDF, infer roles and skills |
-| POST | `/job-recommendations` | Generate matched job listings |
-| POST | `/generate-question` | Adaptive interview question generation |
-| POST | `/evaluate-answer` | Technical answer scoring with ideal answer |
-| POST | `/analyze-communication` | Audio transcript communication analysis |
-| POST | `/generate-report` | Final AI coaching report |
+- **Technical (1–10):** Semantic scoring, keyword hits, and conceptual depth (LLM-based).
+- **Communication (1–10):** WPM pace, filler count, pitch variation, and hesitation metrics.
+- **Visual/Posture (1–10):** Eye-contact, stress-levels, and posture alignment.
 
-## Tech Stack
+## 📄 Documentation
+- [Architecture Details](ARCHITECTURE.md)
+- [Sample Inputs/Outputs](SAMPLE_DATA.md)
 
-- **Backend:** Node.js, Express.js, Groq API (LLaMA 3.3 70B)
-- **Frontend:** Vanilla JS, face-api.js, Web Speech API
-- **PDF Parsing:** pdf-parse
-
-## Scoring Approach
-
-Each answer is evaluated across three modalities:
-
-- **Technical (1–10):** LLM semantic scoring + keyword/intent matching
-- **Communication (1–10):** Filler word count, pace (WPM), clarity via LLM
-- **Confidence (1–10):** Face engagement and expression analysis via face-api.js
