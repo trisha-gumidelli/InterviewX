@@ -1643,8 +1643,16 @@
       lastScore: null,
       currentQuestion: '',
       questionCount: 0,
-      maxQuestions: 5,
+      maxQuestions: 10,
       questionType: 'technical',
+      currentQuestionType: 'technical',
+      questionSequence: [
+        'technical', 'technical', 'technical', 'technical', 'technical',
+        'behavioral', 'behavioral',
+        'system_design', 'system_design',
+        'coding'
+      ],
+      typeHistory: [], // Tracks the type of each question actually asked
       allScores: [],       // { q, score, comm, conf }
       techScores: [],
       commScores: [],
@@ -1827,8 +1835,11 @@
       document.querySelectorAll('[data-qtype]').forEach(b => {
         b.className = b.dataset.qtype === type ? 'btn sm' : 'btn sm ghost';
       });
-      const labels = { technical: '⚙ Technical', behavioral: '💬 Behavioral', system_design: '🏗 System Design', coding: '💻 Coding' };
-      document.getElementById('qTypeBadge').textContent = labels[type] || '⚙ Technical';
+      
+      // If in an active interview, regenerate the current question with the new type
+      if (document.getElementById('interviewSection').style.display === 'block' && state.questionCount > 0) {
+        fetchNextQuestion(true);
+      }
     }
 
     function startInterview() {
@@ -1846,6 +1857,7 @@
       state.techScores = [];
       state.commScores = [];
       state.confScores = [];
+      state.typeHistory = [];
       state.transcript = '';
       state.fillerCount = 0;
 
@@ -1853,7 +1865,13 @@
       document.getElementById('qProgress').textContent = 'Q0/' + state.maxQuestions;
 
       buildProgressDots();
-      setQType('technical');
+      // Start with the first type in the sequence
+      const initialType = state.questionSequence[0];
+      state.questionType = initialType;
+      document.querySelectorAll('[data-qtype]').forEach(b => {
+        b.className = b.dataset.qtype === initialType ? 'btn sm' : 'btn sm ghost';
+      });
+      
       fetchNextQuestion();
       initFaceApi();
     }
@@ -1879,10 +1897,10 @@
       }
     }
 
-    async function fetchNextQuestion() {
+    async function fetchNextQuestion(isRegenerate = false) {
       document.getElementById('questionText').textContent = '';
       document.getElementById('questionText').className = 'loading-dots';
-      document.getElementById('questionText').textContent = 'Generating question';
+      document.getElementById('questionText').textContent = isRegenerate ? 'Regenerating question...' : 'Generating question';
       document.getElementById('answerArea').style.display = 'none';
       document.getElementById('feedbackContainer').innerHTML = '';
       document.getElementById('nextBtn').style.display = 'none';
@@ -1896,6 +1914,18 @@
       if (wcd) { wcd.textContent = '0 / 500 words'; wcd.style.color = 'var(--muted)'; }
 
       try {
+        // Automatically determine type based on sequence if not regenerating
+        const questionNum = isRegenerate ? state.questionCount : state.questionCount + 1;
+        if (!isRegenerate) {
+          const autoType = state.questionSequence[questionNum - 1] || 'technical';
+          state.questionType = autoType;
+          // Update the type selector buttons to show what's active
+          document.querySelectorAll('[data-qtype]').forEach(b => {
+            b.className = b.dataset.qtype === autoType ? 'btn sm' : 'btn sm ghost';
+          });
+        }
+
+        const targetType = state.questionType;
         const res = await fetch('/generate-question', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1904,8 +1934,8 @@
             previousScore: state.lastScore,
             pastQuestions: state.pastQuestions,
             weaknesses: state.currentWeaknesses,
-            questionType: state.questionType,
-            questionNum: state.questionCount + 1,
+            questionType: targetType,
+            questionNum: questionNum,
             totalQuestions: state.maxQuestions,
             interviewPhase: state.interviewPhase,
             consecutiveLowScores: state.consecutiveLowScores
@@ -1915,10 +1945,28 @@
         if (!data.success) throw new Error(data.error);
 
         state.currentQuestion = data.question;
-        state.questionCount++;
+        state.currentQuestionType = targetType;
+        if (!isRegenerate) {
+          state.questionCount++;
+          state.typeHistory.push(targetType);
+        } else {
+          // Replace last entry if regenerating
+          state.typeHistory[state.typeHistory.length - 1] = targetType;
+        }
         updateProgressDots();
+
+        // Update badge to reflect ACTUAL question type
+        const labels = { technical: '⚙ Technical', behavioral: '💬 Behavioral', system_design: '🏗 System Design', coding: '💻 Coding' };
+        const labelText = labels[targetType] || '⚙ Technical';
+        document.getElementById('qTypeBadge').textContent = labelText;
+
+        // Calculate category-specific count
+        const currentTypeIndex = state.typeHistory.filter(t => t === targetType).length;
+        const totalTypeCount = state.questionSequence.filter(t => t === targetType).length;
+        const typeName = targetType.charAt(0).toUpperCase() + targetType.slice(1).replace('_', ' ');
+
         document.getElementById('qProgress').textContent = `Q${state.questionCount}/${state.maxQuestions}`;
-        document.getElementById('qNumberLabel').textContent = `QUESTION ${state.questionCount} OF ${state.maxQuestions}`;
+        document.getElementById('qNumberLabel').textContent = `${typeName} Question ${currentTypeIndex} of ${totalTypeCount}`;
         document.getElementById('questionText').className = '';
         document.getElementById('questionText').textContent = data.question;
         document.getElementById('ttsControls').style.display = 'flex';
@@ -1940,16 +1988,30 @@
         display.textContent = `${count} / 500 words`;
         display.style.color = count > 500 ? 'var(--red)' : count > 400 ? 'var(--yellow)' : 'var(--muted)';
       }
-      // Hard-cap at 500 words
-      if (count > 500) {
-        ta.value = words.slice(0, 500).join(' ');
-      }
     }
 
     async function submitAnswer() {
       const answer = document.getElementById('answerInput').value.trim();
-      if (!answer && !state.transcript) return;
-      const finalAnswer = [answer, state.transcript].filter(Boolean).join(' ').trim();
+      if (!answer) return;
+      const finalAnswer = answer;
+      const totalWords = finalAnswer.split(/\s+/).filter(Boolean).length;
+
+      if (totalWords > 500) {
+        document.getElementById('feedbackContainer').innerHTML = `
+          <div class="feedback-card fade-in" style="border-color: var(--red)">
+            <div class="feedback-section">
+              <div class="feedback-label">Submission Error</div>
+              <div style="color:var(--red);line-height:1.7;font-weight:600">
+                Word limit exceeded (${totalWords} / 500 words).
+              </div>
+              <div style="color:var(--text2);font-size:0.85rem;margin-top:0.5rem">
+                Please shorten your answer before submitting.
+              </div>
+            </div>
+          </div>
+        `;
+        return;
+      }
       const nonsenseFrontend =
         /^[0-9\s]+$|^[a-z]{1,4}$|^(.)\1+$/i.test(finalAnswer);
 
@@ -2000,7 +2062,7 @@
               question: state.currentQuestion,
               answer: finalAnswer,
               role: state.currentRole,
-              questionType: state.questionType
+              questionType: state.currentQuestionType
             })
           }),
           fetch('/analyze-communication', {

@@ -340,7 +340,7 @@ app.post('/generate-question', async (req, res) => {
 
     const typeGuide = {
       'technical': 'Focus on core technical concepts, implementation details, or debugging scenarios.',
-      'behavioral': 'Ask a behavioral/situational question using STAR format. Start with "Tell me about a time..."',
+      'behavioral': 'STRICTLY BEHAVIORAL: Ask a situational question using the STAR format. Start with "Tell me about a time..." or "Give me an example of when...". DO NOT ask technical or design questions.',
       'system_design': 'Ask a system design question ("Design a system that...", "How would you architect...")',
       'coding': 'Ask about algorithmic thinking, data structures, or code reasoning (no actual code required, just approach).'
     }[questionType] || 'Ask a relevant technical question.';
@@ -558,7 +558,7 @@ Performance Summary:
 - Overall: ${overallAvg.toFixed(1)}/10
 
 Questions & Scores:
-${(questionHistory || []).map((q, i) => `Q${i + 1} [${q.score}/10]: ${q.question.substring(0, 80)}`).join('\n')}
+${(questionHistory || []).map((q, i) => `Q${i + 1} [${q.score}/10]: ${(q.question || '').substring(0, 80)}`).join('\n')}
 
 Resume Gaps: ${(weaknesses || []).join(', ')}
 
