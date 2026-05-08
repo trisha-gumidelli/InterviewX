@@ -32,7 +32,7 @@ async function groqChat(messages, opts = {}) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.GROK_API_KEY}`
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
         },
         body: JSON.stringify({
           model,
@@ -52,6 +52,11 @@ async function groqChat(messages, opts = {}) {
       }
 
       // Skip on model-not-found or deactivated
+      if (res.status === 401 || res.status === 403) {
+        console.error(`❌ ${model} auth error (${res.status}): ${data.error?.message}`);
+        throw new Error(`GROQ API key invalid or unauthorized. Check GROQ_API_KEY in .env`);
+      }
+
       if (res.status === 404 || res.status === 400) {
         console.warn(`⚠ ${model} not available (${res.status}), trying next...`);
         lastError = new Error(`${model} not available`);
@@ -72,44 +77,128 @@ async function groqChat(messages, opts = {}) {
       continue;
     }
   }
-  throw new Error('API rate limit reached across all models. Please wait 1-2 minutes and try again, or add a fresh GROK_API_KEY in .env');
+  throw new Error('API rate limit reached across all models. Please wait 1-2 minutes and try again, or add a fresh GROQ_API_KEY in .env');
 }
 
+// ── ROBUST JSON PARSER ───────────────────────────────────────────────────────
+// Strategy 1: Direct parse after extracting the outermost { } block
+// Strategy 2: Fix unescaped control characters inside JSON strings
+// Strategy 3: Remove trailing commas before } or ]
+// Strategy 4: Truncate at last valid closing brace (handles cut-off responses)
+// Strategy 5: Strip all non-ASCII / non-printable chars then retry
 function parseJSON(text) {
-  try {
-    // 1. Extract the JSON object from the text (handles markdown wrappers)
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('No JSON object found in response');
-    let jsonStr = match[0];
+  if (!text || typeof text !== 'string') throw new Error('Empty response from AI model');
 
-    // 2. Fix the most common LLM error: literal newlines/tabs inside strings
-    // We target characters in the range 00-1F (control chars)
-    // and replace them with their escaped counterparts
-    jsonStr = jsonStr.replace(/[\u0000-\u001F\u007F-\u009F]/g, (c) => {
-      if (c === '\n') return '\\n';
-      if (c === '\r') return '\\r';
-      if (c === '\t') return '\\t';
-      return ''; // Strip other control chars
-    });
+  // Pull out the first {...} block, even if there is surrounding prose
+  const blockMatch = text.match(/\{[\s\S]*\}/);
+  const raw = blockMatch ? blockMatch[0] : text;
 
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    // 3. Last-ditch effort: if it still fails, try to strip everything that's not standard printable ASCII
-    // or known JSON structural characters.
+  const attempts = [
+    // S1 – as-is
+    () => raw,
+
+    // S2 – fix control chars inside strings without touching structural whitespace
+    () => {
+      let depth = 0, inStr = false, escape = false, out = '';
+      for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        if (escape) { out += ch; escape = false; continue; }
+        if (ch === '\\') { escape = true; out += ch; continue; }
+        if (ch === '"') inStr = !inStr;
+        if (inStr && ch === '\n') { out += '\\n'; continue; }
+        if (inStr && ch === '\r') { out += '\\r'; continue; }
+        if (inStr && ch === '\t') { out += '\\t'; continue; }
+        if (inStr && ch.charCodeAt(0) < 0x20) continue; // drop other control chars
+        if (!inStr) { if (ch === '{' || ch === '[') depth++; if (ch === '}' || ch === ']') depth--; }
+        out += ch;
+      }
+      return out;
+    },
+
+    // S3 – remove trailing commas before ] or }
+    () => raw.replace(/,\s*([}\]])/g, '$1'),
+
+    // S4 – combine S2 + S3
+    () => {
+      let depth = 0, inStr = false, escape = false, out = '';
+      for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        if (escape) { out += ch; escape = false; continue; }
+        if (ch === '\\') { escape = true; out += ch; continue; }
+        if (ch === '"') inStr = !inStr;
+        if (inStr && ch === '\n') { out += '\\n'; continue; }
+        if (inStr && ch === '\r') { out += '\\r'; continue; }
+        if (inStr && ch === '\t') { out += '\\t'; continue; }
+        if (inStr && ch.charCodeAt(0) < 0x20) continue;
+        if (!inStr) { if (ch === '{' || ch === '[') depth++; if (ch === '}' || ch === ']') depth--; }
+        out += ch;
+      }
+      return out.replace(/,\s*([}\]])/g, '$1');
+    },
+
+    // S5 – truncate at last closing brace (handles cut-off max_tokens)
+    () => {
+      const last = raw.lastIndexOf('}');
+      return last !== -1 ? raw.substring(0, last + 1) : raw;
+    },
+
+    // S6 – strip non-ASCII + control chars then retry
+    () => raw
+      .replace(/[^\x20-\x7E\n\r\t]/g, '')
+      .replace(/,\s*([}\]])/g, '$1'),
+  ];
+
+  for (let i = 0; i < attempts.length; i++) {
     try {
-      const match = text.match(/\{[\s\S]*\}/);
-      const stripped = (match ? match[0] : text)
-        .replace(/[^\x20-\x7E\n\r\t]/g, '') // Keep basic ASCII + whitespace
-        .replace(/\n/g, '\\n')
-        .replace(/\r/g, '\\r')
-        .replace(/\t/g, '\\t');
-      // This is risky, but better than a total failure
-      // We only do this if the first attempt failed
-      console.warn('⚠ Using emergency JSON repair');
-      return JSON.parse(stripped);
-    } catch (inner) {
-      console.error('❌ JSON Parse Failed. Raw Text:', text);
-      throw new Error('Evaluation response was malformed. Please try again.');
+      const candidate = attempts[i]();
+      const parsed = JSON.parse(candidate);
+      if (i > 0) console.warn(`⚠ JSON parsed with strategy S${i + 1}`);
+      return parsed;
+    } catch (_) { /* try next strategy */ }
+  }
+
+  console.error('❌ All JSON repair strategies failed. Raw response:\n', text.substring(0, 500));
+  throw new Error('AI response was malformed. Please try again.');
+}
+
+// ── JSON-AWARE GROQ CALLER WITH AUTO-RETRY ────────────────────────────────────
+// Calls groqChat, tries to parse JSON; if it fails, retries once with a stricter
+// "return ONLY raw JSON, no prose, no markdown" reminder injected.
+async function groqChatJSON(messages, opts = {}, requiredKeys = []) {
+  const tryParse = async (msgs) => {
+    const raw = await groqChat(msgs, opts);
+    const parsed = parseJSON(raw);
+
+    // Validate required top-level keys are present
+    if (requiredKeys.length) {
+      const missing = requiredKeys.filter(k => !(k in parsed));
+      if (missing.length) throw new Error(`Response missing keys: ${missing.join(', ')}`);
+    }
+    return parsed;
+  };
+
+  try {
+    return await tryParse(messages);
+  } catch (firstErr) {
+    console.warn(`⚠ First JSON parse failed (${firstErr.message}). Retrying with stricter prompt…`);
+
+    // Inject a stern reminder while preserving full message context
+    const reminderMessages = [
+      ...messages.slice(0, -1),
+      {
+        role: 'user',
+        content: messages[messages.length - 1].content +
+          '\n\nCRITICAL: Your previous response failed JSON validation. ' +
+          'Return ONLY a raw JSON object. No markdown fences, no prose, no explanation. ' +
+          'Start your response with { and end with }.'
+      }
+    ];
+
+    try {
+      return await tryParse(reminderMessages);
+    } catch (secondErr) {
+      console.error(`❌ Retry also failed: ${secondErr.message}`);
+      throw secondErr;
     }
   }
 }
@@ -146,39 +235,21 @@ app.post('/analyze', upload.single('resume'), async (req, res) => {
     if (!resumeText || resumeText.length < 100)
       return res.status(400).json({ error: 'Could not extract text from PDF.' });
 
-    const content = await groqChat([{
+    const analysis = await groqChatJSON([{
       role: 'user',
       content: `You are an expert technical recruiter and career coach. Analyze this resume carefully.
 
-Respond ONLY in valid JSON with this EXACT structure:
-{
-  "suggested_roles": [
-    { "title": "Role Name", "match_percent": 85, "reason": "Specific reason based on resume" },
-    { "title": "Role Name", "match_percent": 78, "reason": "Specific reason" },
-    { "title": "Role Name", "match_percent": 65, "reason": "Specific reason" }
-  ],
-  "strengths": ["strength 1", "strength 2", "strength 3", "strength 4"],
-  "weaknesses": ["gap 1", "gap 2", "gap 3"],
-  "skill_breakdown": {
-    "technical": ["skill1", "skill2", "skill3", "skill4"],
-    "soft": ["skill1", "skill2", "skill3"],
-    "missing_for_top_role": ["skill1", "skill2", "skill3"]
-  },
-  "summary": "2-sentence candidate summary highlighting unique value and readiness",
-  "seniority": "Junior",
-  "domain": "Backend",
-  "years_experience": 2,
-  "education_level": "Bachelor's"
-}
+Return ONLY a raw JSON object — no markdown, no prose, no backticks. Start with { and end with }.
+
+Required structure:
+{"suggested_roles":[{"title":"Role Name","match_percent":85,"reason":"Specific reason based on resume"},{"title":"Role Name","match_percent":78,"reason":"Specific reason"},{"title":"Role Name","match_percent":65,"reason":"Specific reason"}],"strengths":["strength 1","strength 2","strength 3","strength 4"],"weaknesses":["gap 1","gap 2","gap 3"],"skill_breakdown":{"technical":["skill1","skill2","skill3","skill4"],"soft":["skill1","skill2","skill3"],"missing_for_top_role":["skill1","skill2","skill3"]},"summary":"2-sentence candidate summary","seniority":"Junior","domain":"Backend","years_experience":2,"education_level":"Bachelor's"}
 
 Seniority must be one of: Junior, Mid, Senior, Staff, Principal
 Domain must be one of: Backend, Frontend, Full-Stack, Data Science, ML/AI, DevOps, QA, Product, Embedded, Mobile
 
 Resume:
 ${resumeText.substring(0, 3000)}`
-    }], { temperature: 0.2, max_tokens: 900 });
-
-    const analysis = parseJSON(content);
+    }], { temperature: 0.2, max_tokens: 900 }, ['suggested_roles', 'strengths', 'seniority']);
     res.json({ success: true, analysis, resumeText: resumeText.substring(0, 3000) });
   } catch (err) {
     console.error('Analyze error:', err.message);
@@ -201,12 +272,10 @@ app.post('/job-recommendations', async (req, res) => {
         `JOB_${i + 1}: "${j.title}" at ${j.company_name} | Tags: ${(j.tags || []).slice(0, 5).join(', ')}`
       ).join('\n');
 
-      const content = await groqChat([{
+      const ranked = await groqChatJSON([{
         role: 'user',
-        content: `You are a career coach. Match this candidate to real job listings.\nCandidate: ${seniority || 'Mid'} ${domain || 'Backend'} | Roles: ${(roles || []).slice(0, 2).join(', ')} | Skills: ${(skills || []).slice(0, 7).join(', ')} | ${years_experience || 2} yrs exp\n\nListings:\n${jobsList}\n\nPick the 6 best-fitting jobs. For each: job_number (integer), match_score (60-95), why_it_fits (1 sentence), required_skills (3 items), missing_skills (1-2 items).\nRespond ONLY in valid JSON: {"selected":[{"job_number":1,"match_score":87,"why_it_fits":"...","required_skills":["s1","s2","s3"],"missing_skills":["s1"]}]}`
-      }], { temperature: 0.3, max_tokens: 900 });
-
-      const ranked = parseJSON(content);
+        content: `You are a career coach. Match this candidate to real job listings.\nCandidate: ${seniority || 'Mid'} ${domain || 'Backend'} | Roles: ${(roles || []).slice(0, 2).join(', ')} | Skills: ${(skills || []).slice(0, 7).join(', ')} | ${years_experience || 2} yrs exp\n\nListings:\n${jobsList}\n\nPick the 6 best-fitting jobs. For each: job_number (integer), match_score (60-95), why_it_fits (1 sentence), required_skills (3 items), missing_skills (1-2 items).\nReturn ONLY raw JSON — no markdown, no prose. Start with { end with }:\n{"selected":[{"job_number":1,"match_score":87,"why_it_fits":"...","required_skills":["s1","s2","s3"],"missing_skills":["s1"]}]}`
+      }], { temperature: 0.3, max_tokens: 900 }, ['selected']);
       const jobs = (ranked.selected || []).map(s => {
         const r = realJobs[s.job_number - 1];
         if (!r) return null;
@@ -239,12 +308,10 @@ app.post('/job-recommendations', async (req, res) => {
 
     // Step 3: Fallback — AI-generated jobs if Remotive is unavailable
     console.log('⚠ Falling back to AI-generated job recommendations');
-    const content = await groqChat([{
+    const result = await groqChatJSON([{
       role: 'user',
-      content: `Generate 6 realistic job recommendations as JSON for a ${seniority || 'Mid'} ${domain || 'Backend'} candidate.\nSkills: ${(skills || []).slice(0, 6).join(', ')}. Target roles: ${(roles || []).slice(0, 2).join(', ')}.\nRespond ONLY in this JSON format:\n{"jobs":[{"id":1,"title":"","company":"","company_logo_color":"#4f46e5","location":"Remote","salary_range":"$X-$Y","match_score":85,"why_it_fits":"1 sentence","required_skills":["s1","s2"],"missing_skills":["s1"],"job_type":"Full-time","experience_required":"2-4 years","posted_days_ago":3,"apply_url":"https://linkedin.com/jobs","is_real":false}]}\nRules: real companies, sort by match_score desc, scores 60-95.`
-    }], { temperature: 0.5, max_tokens: 1200 });
-
-    const result = parseJSON(content);
+      content: `Generate 6 realistic job recommendations as JSON for a ${seniority || 'Mid'} ${domain || 'Backend'} candidate.\nSkills: ${(skills || []).slice(0, 6).join(', ')}. Target roles: ${(roles || []).slice(0, 2).join(', ')}.\nReturn ONLY raw JSON — no markdown, no prose. Start with { end with }:\n{"jobs":[{"id":1,"title":"","company":"","company_logo_color":"#4f46e5","location":"Remote","salary_range":"$X-$Y","match_score":85,"why_it_fits":"1 sentence","required_skills":["s1","s2"],"missing_skills":["s1"],"job_type":"Full-time","experience_required":"2-4 years","posted_days_ago":3,"apply_url":"https://linkedin.com/jobs","is_real":false}]}\nRules: real companies, sort by match_score desc, scores 60-95.`
+    }], { temperature: 0.5, max_tokens: 1200 }, ['jobs']);
     res.json({ success: true, jobs: result.jobs || [], source: 'ai' });
   } catch (err) {
     console.error('Job recommendations error:', err.message);
@@ -273,7 +340,7 @@ app.post('/generate-question', async (req, res) => {
 
     const typeGuide = {
       'technical': 'Focus on core technical concepts, implementation details, or debugging scenarios.',
-      'behavioral': 'Ask a behavioral/situational question using STAR format. Start with "Tell me about a time..."',
+      'behavioral': 'STRICTLY BEHAVIORAL: Ask a situational question using the STAR format. Start with "Tell me about a time..." or "Give me an example of when...". DO NOT ask technical or design questions.',
       'system_design': 'Ask a system design question ("Design a system that...", "How would you architect...")',
       'coding': 'Ask about algorithmic thinking, data structures, or code reasoning (no actual code required, just approach).'
     }[questionType] || 'Ask a relevant technical question.';
@@ -291,7 +358,7 @@ Known candidate weaknesses to occasionally probe: ${(weaknesses || []).join(', '
 Previously asked questions — DO NOT repeat any of these:
 ${(pastQuestions || []).map((q, i) => `${i + 1}. ${q}`).join('\n')}
 
-Respond ONLY with the interview question. No prefixes, quotes, or formatting. The question should be specific, clear, and interview-appropriate.`
+Respond ONLY with the interview question. No prefixes, quotes, or formatting. The question should be specific, clear, interview-appropriate, and answerable within 500 words.`
     }], { temperature: 0.75, max_tokens: 350 });
 
     res.json({ success: true, question: content.trim() });
@@ -372,13 +439,17 @@ app.post('/evaluate-answer', async (req, res) => {
       });
     }
 
-    const content = await groqChat([{
+    // Enforce 500-word limit on the answer before sending to LLM
+    const answerWords = (answer || '').trim().split(/\s+/).filter(Boolean);
+    const trimmedAnswer = answerWords.length > 500 ? answerWords.slice(0, 500).join(' ') + ' [truncated to 500 words]' : answer;
+
+    const evaluation = await groqChatJSON([{
       role: 'user',
       content: `You are a BRUTALLY HONEST and ELITE Senior Technical Interviewer. 
 Your goal is to ensure only candidates with actual technical depth pass.
 
 QUESTION: ${question}
-CANDIDATE ANSWER: "${answer}"
+CANDIDATE ANSWER: "${trimmedAnswer}"
 QUESTION TYPE: ${questionType || 'technical'}
 
 SCORING PHILOSOPHY:
@@ -394,19 +465,12 @@ SCORING RUBRIC:
 - 6-7: Good. Correct technical explanation with minor omissions.
 - 8-10: Expert. Deep, nuanced, architecture-aware, and handles edge cases.
 
-Respond ONLY in this JSON format:
-{
-  "score": 1,
-  "feedback": "Strict technical assessment of the answer's relevance and depth.",
-  "ideal_answer": "A concise version of what a perfect answer would look like.",
-  "keywords_hit": ["only list actual technical keywords used"],
-  "keywords_missed": ["list technical concepts that were missing"],
-  "depth_level": "None|Surface|Moderate|Deep|Expert",
-  "confidence_from_answer": "Low|Medium|High"
-}`
-    }], { temperature: 0, max_tokens: 1500 });
+Return ONLY raw JSON — no markdown, no prose. Start with { end with }:
+{"score":1,"feedback":"Strict technical assessment","ideal_answer":"What a perfect answer looks like","keywords_hit":["keyword1"],"keywords_missed":["concept1"],"depth_level":"None","confidence_from_answer":"Low"}
 
-    const evaluation = parseJSON(content);
+depth_level must be one of: None, Surface, Moderate, Deep, Expert
+confidence_from_answer must be one of: Low, Medium, High`
+    }], { temperature: 0, max_tokens: 1500 }, ['score', 'feedback', 'ideal_answer']);
     res.json({ success: true, evaluation });
   } catch (err) {
     console.error('Evaluate error:', err.message);
@@ -419,7 +483,9 @@ app.post('/analyze-communication', async (req, res) => {
   try {
     const { transcript, answer_text, duration_seconds, filler_count, word_count, pitch_variation, hesitation_count } = req.body;
 
-    const text = transcript || answer_text || '';
+    const rawText = transcript || answer_text || '';
+    const textWords = rawText.trim().split(/\s+/).filter(Boolean);
+    const text = textWords.length > 500 ? textWords.slice(0, 500).join(' ') : rawText;
 
     if (!text || text.trim().length < 10) {
       return res.json({
@@ -440,7 +506,7 @@ app.post('/analyze-communication', async (req, res) => {
     const pitchNote = pitch_variation != null ? `Pitch variation(Hz std dev): ${ pitch_variation.toFixed(1) } — ${ pitch_variation > 40 ? 'expressive' : pitch_variation > 15 ? 'moderate' : 'monotone' } ` : '';
     const hesNote = hesitation_count != null ? `Hesitation pauses detected: ${ hesitation_count } ` : '';
 
-    const content = await groqChat([{
+    const llmResult = await groqChatJSON([{
       role: 'user',
       content: `Analyze this interview answer transcript for communication quality, clarity, and confidence.
 
@@ -451,18 +517,11 @@ Answer length: ${word_count || 0} words
 ${pitchNote}
 ${hesNote}
 
-Evaluate communication quality and respond ONLY in valid JSON with this structure:
-{
-  "confidence_score": 7,
-  "clarity_score": 6,
-  "communication_feedback": "2-3 specific, actionable observations about how they communicated (mention pitch/hesitation if data provided)",
-  "strengths": ["comm strength 1", "comm strength 2"],
-  "improvements": ["specific improvement 1", "specific improvement 2"],
-  "overall_communication": "Poor|Fair|Good|Excellent"
-}`
-    }], { temperature: 0.3, max_tokens: 600 });
+Return ONLY raw JSON — no markdown, no prose. Start with { end with }:
+{"confidence_score":7,"clarity_score":6,"communication_feedback":"2-3 specific actionable observations","strengths":["strength 1","strength 2"],"improvements":["improvement 1","improvement 2"],"overall_communication":"Good"}
 
-    const llmResult = parseJSON(content);
+overall_communication must be one of: Poor, Fair, Good, Excellent`
+    }], { temperature: 0.3, max_tokens: 600 }, ['confidence_score', 'clarity_score']);
     res.json({
       success: true,
       analysis: {
@@ -488,7 +547,7 @@ app.post('/generate-report', async (req, res) => {
       .filter(s => s !== null && s !== undefined)
       .reduce((a, b, _, arr) => a + b / arr.length, 0);
 
-    const content = await groqChat([{
+    const report = await groqChatJSON([{
       role: 'user',
       content: `Generate a comprehensive post-interview coaching report for a ${seniority || 'Mid'} ${role} candidate.
 
@@ -499,31 +558,15 @@ Performance Summary:
 - Overall: ${overallAvg.toFixed(1)}/10
 
 Questions & Scores:
-${(questionHistory || []).map((q, i) => `Q${i + 1} [${q.score}/10]: ${q.question.substring(0, 80)}`).join('\n')}
+${(questionHistory || []).map((q, i) => `Q${i + 1} [${q.score}/10]: ${(q.question || '').substring(0, 80)}`).join('\n')}
 
 Resume Gaps: ${(weaknesses || []).join(', ')}
 
-Respond ONLY in valid JSON with this structure:
-{
-  "hire_recommendation": "Strong Yes|Yes|Maybe|No",
-  "executive_summary": "3-4 sentence honest assessment of interview performance",
-  "technical_assessment": "2-3 sentences specifically about technical knowledge demonstrated",
-  "communication_assessment": "2-3 sentences about communication style, clarity, and confidence",
-  "top_strengths": ["specific strength 1", "specific strength 2", "specific strength 3"],
-  "critical_gaps": ["specific gap 1", "specific gap 2"],
-  "30_day_action_plan": [
-    "Specific action item 1",
-    "Specific action item 2",
-    "Specific action item 3",
-    "Specific action item 4"
-  ],
-  "resources": [
-    { "topic": "Topic name", "resource": "Specific book/course/platform name" }
-  ]
-}`
-    }], { temperature: 0.4, max_tokens: 2000 });
+Return ONLY raw JSON — no markdown, no prose. Start with { end with }:
+{"hire_recommendation":"Yes","executive_summary":"3-4 sentence honest assessment","technical_assessment":"2-3 sentences about technical knowledge","communication_assessment":"2-3 sentences about communication","top_strengths":["strength 1","strength 2","strength 3"],"critical_gaps":["gap 1","gap 2"],"30_day_action_plan":["action 1","action 2","action 3","action 4"],"resources":[{"topic":"Topic","resource":"Book/course name"}]}
 
-    const report = parseJSON(content);
+hire_recommendation must be one of: Strong Yes, Yes, Maybe, No`
+    }], { temperature: 0.4, max_tokens: 2000 }, ['hire_recommendation', 'executive_summary', 'top_strengths']);
     res.json({ success: true, report });
   } catch (err) {
     console.error('Report error:', err.message);
