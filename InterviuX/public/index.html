@@ -601,6 +601,10 @@
       box-shadow: inset 0 1px 0 rgba(139,92,246,0.1), var(--glow-purple)
     }
 
+    #questionText {
+      white-space: pre-wrap;
+    }
+
     .q-number {
       font-size: .65rem;
       font-family: var(--mono);
@@ -1691,7 +1695,7 @@
             <button class="btn sm" onclick="setQType('behavioral')" data-qtype="behavioral">Behavioral</button>
             <button class="btn sm ghost" onclick="setQType('system_design')" data-qtype="system_design">System
               Design</button>
-            <button class="btn sm ghost" onclick="setQType('coding')" data-qtype="coding">Coding Approach</button>
+            <button class="btn sm ghost" onclick="setQType('coding')" data-qtype="coding">Coding</button>
           </div>
 
           <div class="q-box" id="questionBox">
@@ -1721,11 +1725,13 @@
 
           <!-- Answer Section -->
           <div class="answer-area" id="answerArea" style="display:none">
-            <textarea class="answer-textarea" id="answerInput"
-              placeholder="Type your answer here... (or use the mic button to record)"
-              oninput="updateWordCount()"></textarea>
-            <div style="text-align:right;font-size:.78rem;margin-top:.25rem">
-              <span id="wordCountDisplay" style="color:var(--muted)">0 / 500 words</span>
+            <div id="textInputContainer">
+              <textarea class="answer-textarea" id="answerInput"
+                placeholder="Type your answer here... (or use the mic button to record)"
+                oninput="updateWordCount()"></textarea>
+              <div style="text-align:right;font-size:.78rem;margin-top:.25rem">
+                <span id="wordCountDisplay" style="color:var(--muted)">0 / 500 words</span>
+              </div>
             </div>
 
             <div class="answer-controls">
@@ -2117,6 +2123,10 @@
     // RENDER RESULTS
     // ═══════════════════════════════════════════════════════
     function renderResults(a) {
+      // Update language dropdown based on technical skills extracted from resume
+      if (a.skill_breakdown && a.skill_breakdown.technical) {
+        populateLanguageDropdown(a.skill_breakdown.technical);
+      }
       document.getElementById('summaryBox').textContent = a.summary || '';
 
       // Roles
@@ -2179,6 +2189,31 @@
     // ═══════════════════════════════════════════════════════
     // INTERVIEW
     // ═══════════════════════════════════════════════════════
+    function populateLanguageDropdown(technicalSkills) {
+      const knownLanguages = ['Python', 'JavaScript', 'TypeScript', 'Java', 'C++', 'C', 'C#', 'Go', 'Rust', 'Ruby', 'PHP', 'Swift', 'Kotlin', 'Scala', 'Dart', 'R', 'SQL', 'Bash'];
+      
+      const candidateLangs = technicalSkills.filter(skill => 
+        knownLanguages.some(lang => lang.toLowerCase() === skill.toLowerCase())
+      ).map(skill => {
+        // Standardize capitalization
+        return knownLanguages.find(lang => lang.toLowerCase() === skill.toLowerCase()) || skill;
+      });
+
+      // Provide a comprehensive set of defaults
+      const defaults = ['Python', 'JavaScript', 'Java', 'C++', 'Go', 'C#', 'TypeScript', 'Rust', 'Ruby', 'PHP', 'Swift'];
+      const finalLangs = Array.from(new Set([...candidateLangs, ...defaults]));
+
+      const select = document.getElementById('codeLangSelect');
+      if (select) {
+        select.innerHTML = '';
+        finalLangs.forEach(lang => {
+          const opt = document.createElement('option');
+          opt.value = lang.toLowerCase();
+          opt.textContent = lang;
+          select.appendChild(opt);
+        });
+      }
+    }
     function getTypeCounts() {
       const counts = { technical: 0, behavioral: 0, system_design: 0, coding: 0 };
       state.allScores.forEach(s => {
@@ -2227,6 +2262,12 @@
       
       const codePanel = document.getElementById('codeEditorPanel');
       if (codePanel) codePanel.style.display = type === 'coding' ? 'block' : 'none';
+      
+      const textInput = document.getElementById('textInputContainer');
+      if (textInput) textInput.style.display = type === 'coding' ? 'none' : 'block';
+
+      const micBtn = document.getElementById('micBtn');
+      if (micBtn) micBtn.style.display = type === 'coding' ? 'none' : 'inline-flex';
 
       // If in an active interview, regenerate the current question with the new type
       if (document.getElementById('interviewSection').style.display === 'block' && state.questionCount > 0) {
@@ -2257,6 +2298,26 @@
       document.getElementById('qProgress').textContent = 'Q0/' + state.maxQuestions;
 
       buildProgressDots();
+      
+      const nonTechDomains = ['Non-Technical', 'Design', 'Sales', 'Marketing', 'HR', 'Operations', 'Finance'];
+      const isNonTech = nonTechDomains.includes(state.domain);
+
+      if (isNonTech) {
+        state.questionSequence = ['technical', 'technical', 'technical', 'technical', 'behavioral', 'behavioral', 'technical', 'technical', 'technical', 'technical'];
+        state.typeLimits = { technical: 8, behavioral: 2, system_design: 0, coding: 0 };
+        const sdBtn = document.querySelector('[data-qtype="system_design"]');
+        const cBtn = document.querySelector('[data-qtype="coding"]');
+        if (sdBtn) sdBtn.style.display = 'none';
+        if (cBtn) cBtn.style.display = 'none';
+      } else {
+        state.questionSequence = ['technical', 'technical', 'technical', 'technical', 'technical', 'behavioral', 'behavioral', 'system_design', 'system_design', 'coding'];
+        state.typeLimits = { technical: 5, behavioral: 2, system_design: 2, coding: 1 };
+        const sdBtn = document.querySelector('[data-qtype="system_design"]');
+        const cBtn = document.querySelector('[data-qtype="coding"]');
+        if (sdBtn) sdBtn.style.display = '';
+        if (cBtn) cBtn.style.display = '';
+      }
+
       // Start with the first type in the sequence
       const initialType = state.questionSequence[0];
       state.questionType = initialType;
@@ -2297,6 +2358,7 @@
       document.getElementById('feedbackContainer').innerHTML = '';
       document.getElementById('nextBtn').style.display = 'none';
       document.getElementById('answerInput').value = '';
+      clearCode();
       document.getElementById('transcriptBox').className = 'transcript-box';
       document.getElementById('transcriptText').textContent = '';
       state.transcript = ''; state.fillerCount = 0; state.wordCount = 0;
@@ -2319,6 +2381,15 @@
           // If not exhausted, we simply stay in state.questionType
         }
         updateTypeButtons();
+        
+        const codePanel = document.getElementById('codeEditorPanel');
+        if (codePanel) codePanel.style.display = state.questionType === 'coding' ? 'block' : 'none';
+
+        const textInput = document.getElementById('textInputContainer');
+        if (textInput) textInput.style.display = state.questionType === 'coding' ? 'none' : 'block';
+
+        const micBtn = document.getElementById('micBtn');
+        if (micBtn) micBtn.style.display = state.questionType === 'coding' ? 'none' : 'inline-flex';
 
         const targetType = state.questionType;
         const res = await fetch('/generate-question', {
@@ -2364,7 +2435,7 @@
         document.getElementById('qProgress').textContent = `Q${state.questionCount}/${state.maxQuestions}`;
         document.getElementById('qNumberLabel').textContent = `${typeName} Question ${currentTypeIndex} of ${totalTypeCount}`;
         document.getElementById('questionText').className = '';
-        document.getElementById('questionText').textContent = data.question;
+        document.getElementById('questionText').textContent = data.question.trim();
         document.getElementById('ttsControls').style.display = 'flex';
         document.getElementById('answerArea').style.display = 'block';
         state.visualReadings = [];
@@ -2388,8 +2459,11 @@
 
     async function submitAnswer() {
       const answer = document.getElementById('answerInput').value.trim();
-      if (!answer) return;
-      const finalAnswer = answer + getCodeSubmission();
+      const codeSubmission = getCodeSubmission();
+      const finalAnswer = answer + codeSubmission;
+      
+      if (!finalAnswer.trim()) return;
+      
       const totalWords = finalAnswer.split(/\s+/).filter(Boolean).length;
 
       if (totalWords > 500) {
@@ -2465,6 +2539,7 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              questionType: state.currentQuestionType,
               transcript: state.transcript || '',
               answer_text: finalAnswer,
               duration_seconds: state.recSeconds || 0,

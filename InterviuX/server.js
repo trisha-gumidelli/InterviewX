@@ -345,8 +345,8 @@ Return ONLY a raw JSON object — no markdown, no prose, no backticks. Start wit
 Required structure:
 {"suggested_roles":[{"title":"Role Name","match_percent":85,"reason":"Specific reason based on resume"},{"title":"Role Name","match_percent":78,"reason":"Specific reason"},{"title":"Role Name","match_percent":65,"reason":"Specific reason"}],"strengths":["strength 1","strength 2","strength 3","strength 4"],"weaknesses":["gap 1","gap 2","gap 3"],"skill_breakdown":{"technical":["skill1","skill2","skill3","skill4"],"soft":["skill1","skill2","skill3"],"missing_for_top_role":["skill1","skill2","skill3"]},"summary":"2-sentence candidate summary","seniority":"Junior","domain":"Backend","years_experience":2,"education_level":"Bachelor's"}
 
-Seniority must be one of: Junior, Mid, Senior, Staff, Principal
-Domain must be one of: Backend, Frontend, Full-Stack, Data Science, ML/AI, DevOps, QA, Product, Embedded, Mobile
+Seniority must be one of: Junior, Mid, Senior, Staff, Principal, Executive
+Domain must be one of: Backend, Frontend, Full-Stack, Data Science, ML/AI, DevOps, QA, Product, Embedded, Mobile, Non-Technical, Design, Sales, Marketing, HR, Operations, Finance
 
 Resume:
 ${resumeText.substring(0, 3000)}`
@@ -454,10 +454,10 @@ app.post('/generate-question', async (req, res) => {
     }
 
     const typeGuide = {
-      'technical': 'Focus on core technical concepts, implementation details, or debugging scenarios.',
+      'technical': 'Focus on core domain concepts, job-specific scenarios, and functional knowledge relevant to the candidate\\'s specific role.',
       'behavioral': 'STRICTLY BEHAVIORAL: Ask a situational question using the STAR format. Start with "Tell me about a time..." or "Give me an example of when...". DO NOT ask technical or design questions.',
       'system_design': 'Ask a system design question ("Design a system that...", "How would you architect...")',
-      'coding': 'Ask about algorithmic thinking, data structures, or code reasoning (no actual code required, just approach).'
+      'coding': 'Ask a specific, Leetcode-style algorithmic or data structure coding problem. The candidate is expected to write actual code to solve it. Provide a clear problem statement, EXACTLY 2 distinct sample input/output examples, and constraints. Use explicit line breaks to clearly separate the problem statement from the examples and constraints.'
     }[questionType] || 'Ask a relevant technical question.';
 
     const result = await groqChatJSON([{
@@ -556,11 +556,12 @@ app.post('/evaluate-answer', async (req, res) => {
       });
     }
 
-    // Enforce 500-word limit on the answer before sending to LLM
+    // Enforce 1000-word limit on the answer before sending to LLM (increased to accommodate code)
     const answerWords = (answer || '').trim().split(/\s+/).filter(Boolean);
-    const trimmedAnswer = answerWords.length > 500 ? answerWords.slice(0, 500).join(' ') + ' [truncated to 500 words]' : answer;
+    const trimmedAnswer = answerWords.length > 1000 ? answerWords.slice(0, 1000).join(' ') + ' [truncated to 1000 words]' : answer;
 
     const isSystemDesign = (questionType || '').toLowerCase() === 'system_design';
+    const isCoding = (questionType || '').toLowerCase() === 'coding';
 
     const systemDesignPrompt = `You are an ELITE Staff-level Systems Architect conducting a system design interview.
 
@@ -584,6 +585,29 @@ SCORE GUIDE:
 
 Return ONLY raw JSON. Start with { end with }:
 {"score":6,"feedback":"Specific dimension-by-dimension assessment","ideal_answer":"What a Staff-level ideal answer covers","keywords_hit":["load balancer","sharding"],"keywords_missed":["CAP theorem","CDN"],"depth_level":"Moderate","confidence_from_answer":"Medium","primary_concept":"System Design"}
+
+depth_level must be one of: None, Surface, Moderate, Deep, Expert
+confidence_from_answer must be one of: Low, Medium, High`;
+
+    const codingPrompt = `You are an ELITE Senior Software Engineer conducting a coding interview.
+
+QUESTION: ${question}
+CANDIDATE ANSWER AND CODE: "${trimmedAnswer}"
+
+CODING SCORING RUBRIC:
+1. Code Correctness (50%): Does the provided code actually solve the problem? Does it handle edge cases? Are there syntax errors or logical bugs?
+2. Algorithmic Efficiency (30%): Are the Time (Big-O) and Space complexities optimal? 
+3. Code Quality (20%): Is the code readable, modular, and well-named?
+
+SCORE GUIDE:
+- 1-2: No code provided, or completely incorrect approach.
+- 3-4: Code is very buggy or uses a brute-force approach when a much better one exists.
+- 5-6: Code mostly works but has bugs, missing edge cases, or sub-optimal complexity.
+- 7-8: Code is correct and optimal, but has minor readability or edge-case issues.
+- 9-10: Perfect, bug-free, optimal code with excellent naming and structure.
+
+Return ONLY raw JSON. Start with { end with }:
+{"score":10,"feedback":"Perfect O(N) solution with excellent edge-case handling and optimal space complexity.","ideal_answer":"An optimal solution would use a hash map for O(N) time complexity...","keywords_hit":["hash map","O(N) time","edge cases"],"keywords_missed":[],"depth_level":"Expert","confidence_from_answer":"High","primary_concept":"Coding/Algorithms"}
 
 depth_level must be one of: None, Surface, Moderate, Deep, Expert
 confidence_from_answer must be one of: Low, Medium, High`;
@@ -616,9 +640,13 @@ confidence_from_answer must be one of: Low, Medium, High
 
 In addition to the standard fields, include "primary_concept" which identifies the core concept the candidate's answer addressed (or failed to address).`;
 
+    let finalPrompt = standardPrompt;
+    if (isSystemDesign) finalPrompt = systemDesignPrompt;
+    else if (isCoding) finalPrompt = codingPrompt;
+
     const evaluation = await groqChatJSON([{
       role: 'user',
-      content: isSystemDesign ? systemDesignPrompt : standardPrompt
+      content: finalPrompt
     }], { temperature: 0, max_tokens: 1500 }, ['score', 'feedback', 'ideal_answer']);
     res.json({ success: true, evaluation });
   } catch (err) {
@@ -630,7 +658,7 @@ In addition to the standard fields, include "primary_concept" which identifies t
 // ── COMMUNICATION ANALYSIS ────────────────────────────────
 app.post('/analyze-communication', async (req, res) => {
   try {
-    const { transcript, answer_text, duration_seconds, filler_count, word_count, pitch_variation, hesitation_count } = req.body;
+    const { questionType, transcript, answer_text, duration_seconds, filler_count, word_count, pitch_variation, hesitation_count } = req.body;
 
     const rawText = transcript || answer_text || '';
     const textWords = rawText.trim().split(/\s+/).filter(Boolean);
@@ -655,9 +683,8 @@ app.post('/analyze-communication', async (req, res) => {
     const pitchNote = pitch_variation != null ? `Pitch variation(Hz std dev): ${ pitch_variation.toFixed(1) } — ${ pitch_variation > 40 ? 'expressive' : pitch_variation > 15 ? 'moderate' : 'monotone' } ` : '';
     const hesNote = hesitation_count != null ? `Hesitation pauses detected: ${ hesitation_count } ` : '';
 
-    const llmResult = await groqChatJSON([{
-      role: 'user',
-      content: `Analyze this interview answer transcript for communication quality, clarity, and confidence.
+    const isCoding = (questionType || '').toLowerCase() === 'coding';
+    let systemPrompt = `Analyze this interview answer transcript for communication quality, clarity, and confidence.
 
 Transcript: "${text}"
 Filler words detected: ${filler_count || 0}
@@ -669,7 +696,21 @@ ${hesNote}
 Return ONLY raw JSON — no markdown, no prose. Start with { end with }:
 {"confidence_score":7,"clarity_score":6,"communication_feedback":"2-3 specific actionable observations","strengths":["strength 1","strength 2"],"improvements":["improvement 1","improvement 2"],"overall_communication":"Good"}
 
-overall_communication must be one of: Poor, Fair, Good, Excellent`
+overall_communication must be one of: Poor, Fair, Good, Excellent`;
+
+    if (isCoding) {
+      systemPrompt = `This is a coding interview submission. The candidate may have only provided code. 
+DO NOT penalize them for lack of verbal explanation. Analyze any text/comments they provided for clarity, but if it is primarily a code solution, give full marks for communication (10/10) with positive feedback regarding their concise code submission.
+
+Transcript/Code: "${text}"
+
+Return ONLY raw JSON. Start with { end with }:
+{"confidence_score":10,"clarity_score":10,"communication_feedback":"Clear and concise code submission.","strengths":["Direct to the point"],"improvements":[],"overall_communication":"Excellent"}`;
+    }
+
+    const llmResult = await groqChatJSON([{
+      role: 'user',
+      content: systemPrompt
     }], { temperature: 0.3, max_tokens: 600 }, ['confidence_score', 'clarity_score']);
     res.json({
       success: true,
