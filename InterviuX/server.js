@@ -679,7 +679,13 @@ In addition to the standard fields, include "primary_concept" which identifies t
 // ── COMMUNICATION ANALYSIS ────────────────────────────────
 app.post('/analyze-communication', async (req, res) => {
   try {
-    const { questionType, transcript, answer_text, duration_seconds, filler_count, word_count, pitch_variation, hesitation_count } = req.body;
+    const {
+      questionType, transcript, answer_text,
+      duration_seconds, filler_count, word_count,
+      pitch_variation, hesitation_count,
+      // Real audio emotion from client-side spectral analysis (not text inference)
+      audio_emotion_label, audio_arousal, audio_valence
+    } = req.body;
 
     const rawText = transcript || answer_text || '';
     const textWords = rawText.trim().split(/\s+/).filter(Boolean);
@@ -703,6 +709,10 @@ app.post('/analyze-communication', async (req, res) => {
     const paceLabel = wpm === 0 ? 'Unknown' : wpm < 100 ? 'Too slow' : wpm > 175 ? 'Too fast' : 'Good pace';
     const pitchNote = pitch_variation != null ? `Pitch variation(Hz std dev): ${ pitch_variation.toFixed(1) } — ${ pitch_variation > 40 ? 'expressive' : pitch_variation > 15 ? 'moderate' : 'monotone' } ` : '';
     const hesNote = hesitation_count != null ? `Hesitation pauses detected: ${ hesitation_count } ` : '';
+    // Real audio emotion from Web Audio API spectral features (signal-derived, NOT inferred from text)
+    const emotionNote = audio_emotion_label
+      ? `Audio emotion (from signal — RMS/ZCR/spectral centroid): ${audio_emotion_label} (arousal=${(audio_arousal||0).toFixed(2)}, valence=${(audio_valence||0).toFixed(2)}). IMPORTANT: Use this as an observed acoustic fact, not text-inferred sentiment.`
+      : '';
 
     const isCoding = (questionType || '').toLowerCase() === 'coding';
     let systemPrompt = `Analyze this interview answer transcript for communication quality, clarity, and confidence.
@@ -713,6 +723,7 @@ Speaking pace: ${wpm > 0 ? wpm + ' WPM (' + paceLabel + ')' : 'unknown'}
 Answer length: ${word_count || 0} words
 ${pitchNote}
 ${hesNote}
+${emotionNote}
 
 Return ONLY raw JSON — no markdown, no prose. Start with { end with }:
 {"confidence_score":7,"clarity_score":6,"communication_feedback":"2-3 specific actionable observations","strengths":["strength 1","strength 2"],"improvements":["improvement 1","improvement 2"],"overall_communication":"Good"}
