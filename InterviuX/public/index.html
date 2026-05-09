@@ -1694,10 +1694,15 @@
     <div id="interviewSection" style="display:none" class="fade-in">
 
       <!-- Camera auto-prompt banner -->
-      <div id="cameraPromptBanner" style="display:none;align-items:center;gap:.75rem;background:rgba(139,92,246,0.1);border:1px solid rgba(139,92,246,0.3);border-radius:12px;padding:.65rem 1rem;margin-bottom:.85rem;flex-wrap:wrap">
-        <span style="font-size:.82rem;color:var(--purple2);flex:1">📹 <strong>Enable camera</strong> for posture &amp; confidence tracking during your session.</span>
-        <button class="btn sm" onclick="startCamera();document.getElementById('cameraPromptBanner').style.display='none'" style="flex-shrink:0">Enable Camera</button>
-        <button class="btn sm ghost" onclick="document.getElementById('cameraPromptBanner').style.display='none'" style="flex-shrink:0">Skip</button>
+      <div id="cameraPromptBanner" style="display:none;align-items:center;gap:.75rem;background:rgba(139,92,246,0.1);border:1px solid rgba(139,92,246,0.3);border-radius:12px;padding:.85rem 1.2rem;margin-bottom:.85rem;flex-wrap:wrap">
+        <div style="flex:1">
+          <div style="font-size:.85rem;color:var(--purple2);margin-bottom:2px">📹 <strong>Visual Intelligence Analysis</strong></div>
+          <div style="font-size:.72rem;color:var(--text2);line-height:1.4">We use your camera to analyze non-verbal cues like <strong>posture, eye contact, and confidence</strong> in real-time. This data helps our AI provide a holistic evaluation of your interview presence. No video is stored; analysis is performed locally for your privacy.</div>
+        </div>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <button class="btn sm" onclick="startCamera();document.getElementById('cameraPromptBanner').style.display='none'" style="flex-shrink:0">Enable Camera</button>
+          <button class="btn sm ghost" onclick="document.getElementById('cameraPromptBanner').style.display='none'" style="flex-shrink:0">Skip</button>
+        </div>
       </div>
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
@@ -1708,6 +1713,7 @@
         </div>
         <div style="display:flex;gap:.5rem;align-items:center">
           <div class="text-muted" id="qProgress">Q0/5</div>
+          <button class="btn sm ghost" onclick="goBackToRoles()">← Change Role</button>
           <button class="btn sm ghost" onclick="endInterviewEarly()">End Session</button>
         </div>
       </div>
@@ -1838,8 +1844,10 @@
               </div>
             </div>
             <div style="padding:.5rem .75rem;border-top:1px solid var(--border)">
-              <button class="btn sm ghost" style="width:100%" onclick="toggleCamera()" id="camBtn">📹 Enable
-                Camera</button>
+              <div style="font-size:0.65rem;color:var(--text2);margin-bottom:8px;line-height:1.3;opacity:0.8">
+                Used for real-time <strong>posture & confidence analysis</strong>. No video is stored or recorded.
+              </div>
+              <button class="btn sm ghost" style="width:100%" onclick="toggleCamera()" id="camBtn">📹 Enable Camera</button>
             </div>
           </div>
 
@@ -2193,6 +2201,9 @@
     // RENDER RESULTS
     // ═══════════════════════════════════════════════════════
     function renderResults(a) {
+      if (a.suggested_roles && a.suggested_roles.length > 0) {
+        state.currentRole = a.suggested_roles[0].title;
+      }
       // Update language dropdown based on technical skills extracted from resume
       if (a.skill_breakdown && a.skill_breakdown.technical) {
         populateLanguageDropdown(a.skill_breakdown.technical);
@@ -2292,6 +2303,27 @@
         }
       });
       return counts;
+    }
+
+    function goBackToRoles() {
+      // If interview already started, confirm
+      if (state.questionCount > 0 && state.allScores.length > 0) {
+        if (!confirm("You have already started the interview. Are you sure you want to go back and change the role? Your current progress will be lost.")) {
+          return;
+        }
+      }
+
+      // Stop any AI speaking
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+      stopTTS();
+      stopCamera();
+      stopMic();
+
+      document.getElementById('interviewSection').style.display = 'none';
+      document.getElementById('resultsSection').style.display = 'block';
+      
+      // Ensure we are on the resume tab if we came from jobs tab
+      switchTab('resume');
     }
 
     function startInterview() {
@@ -2408,7 +2440,8 @@
             questionNum: questionNum,
             totalQuestions: state.maxQuestions,
             interviewPhase: state.interviewPhase,
-            consecutiveLowScores: state.consecutiveLowScores
+            consecutiveLowScores: state.consecutiveLowScores,
+            domain: state.domain
           })
         });
         const data = await res.json();
@@ -2536,7 +2569,8 @@
               question: state.currentQuestion,
               answer: finalAnswer,
               role: state.currentRole,
-              questionType: state.currentQuestionType
+              questionType: state.currentQuestionType,
+              domain: state.domain
             })
           }),
           fetch('/analyze-communication', {
@@ -3022,7 +3056,7 @@
     // ═══════════════════════════════════════════════════════
     // MIC / AUDIO RECORDING
     // ═══════════════════════════════════════════════════════
-    const FILLER_WORDS = ['um', 'uh', 'like', 'you know', 'basically', 'literally', 'sort of', 'kind of', 'i mean', 'actually', 'right', 'okay so'];
+    const FILLER_WORDS = ['um', 'uh', 'hmm', 'hm', 'ah', 'err', 'uhh', 'like', 'you know', 'basically', 'literally', 'sort of', 'kind of', 'i mean', 'actually', 'right', 'okay so', 'well'];
 
     // ═══════════════════════════════════════════════════════
     // REAL-TIME COACHING ENGINE

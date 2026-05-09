@@ -458,12 +458,12 @@ app.post('/job-recommendations', async (req, res) => {
 // ── QUESTION GENERATION ───────────────────────────────────
 app.post('/generate-question', async (req, res) => {
   try {
-    const { role, previousScore, pastQuestions, weaknesses, questionType, questionNum, totalQuestions, interviewPhase, consecutiveLowScores } = req.body;
+    const { role, previousScore, pastQuestions, weaknesses, questionType, questionNum, totalQuestions, interviewPhase, consecutiveLowScores, domain } = req.body;
 
     const phaseGuide = {
       'warmup': 'WARM-UP phase: ask a straightforward, confidence-building question. Keep difficulty low-to-medium.',
       'core': 'CORE phase: ask a moderately challenging question testing solid understanding of core concepts.',
-      'deepdive': 'DEEP-DIVE phase: ask a hard question — system design, edge cases, architecture trade-offs, or advanced concepts.'
+      'deepdive': 'DEEP-DIVE phase: ask a hard question — advanced industry concepts, complex trade-offs, or leadership scenarios.'
     }[interviewPhase || 'core'] || '';
 
     let difficultyGuide = phaseGuide;
@@ -474,27 +474,38 @@ app.post('/generate-question', async (req, res) => {
       else if (previousScore >= 8) difficultyGuide += ' Excellent last answer — escalate difficulty.';
     }
 
+    const isTechDomain = ['Backend', 'Frontend', 'Full-Stack', 'Data Science', 'ML/AI', 'DevOps', 'QA', 'Embedded', 'Mobile'].includes(domain);
+    
     const typeGuide = {
-      "technical": "Focus on core domain concepts, job-specific scenarios, and functional knowledge relevant to the candidate's specific role.",
-      'behavioral': 'STRICTLY BEHAVIORAL: Ask a situational question using the STAR format. Start with "Tell me about a time..." or "Give me an example of when...". DO NOT ask technical or design questions.',
-      'system_design': 'Ask a system design question ("Design a system that...", "How would you architect...")',
-      'coding': 'Ask a specific, Leetcode-style algorithmic or data structure coding problem. The candidate is expected to write actual code to solve it. Provide a clear problem statement, EXACTLY 2 distinct sample input/output examples, and constraints. Use explicit line breaks to clearly separate the problem statement from the examples and constraints.'
-    }[questionType] || 'Ask a relevant technical question.';
+      "technical": isTechDomain 
+        ? "Focus on core engineering concepts, architecture, and functional knowledge relevant to the candidate's specific tech stack."
+        : `Focus on core industry principles, functional knowledge, and professional standards relevant to a ${role}. (e.g., if Design, focus on aesthetics/space/materials; if Sales, focus on pipeline/negotiation).`,
+      'behavioral': 'STRICTLY BEHAVIORAL: Ask a situational question using the STAR format. Start with "Tell me about a time..." or "Give me an example of when...". DO NOT ask technical or domain-specific theory.',
+      'system_design': 'Ask a system design or high-level architecture question ("Design a system that...", "How would you architect..."). For non-tech, this means designing a process or large-scale project flow.',
+      'coding': 'Ask a specific, Leetcode-style algorithmic problem. ONLY use this for software engineering roles.'
+    }[questionType] || 'Ask a relevant professional question.';
+
+    const persona = isTechDomain 
+      ? 'Senior Technical Interviewer at a top tech company' 
+      : `Senior Lead / Director in the ${domain || 'relevant'} industry`;
 
     const result = await groqChatJSON([{
       role: 'user',
-      content: `You are a senior technical interviewer at a top tech company interviewing for: ${role}
+      content: `You are a ${persona} interviewing for the role: ${role}.
+Domain: ${domain || 'General'}
 This is question ${questionNum || 1} of ${totalQuestions || 5}.
 
 ${difficultyGuide}
 ${typeGuide}
+
+CRITICAL: DO NOT ask software engineering questions (like frontend/backend, databases, APIs) unless the domain is explicitly software-related. If the candidate is an Interior Designer, ask about space planning, lighting, materials, or building codes.
 
 Known candidate weaknesses to occasionally probe: ${(weaknesses || []).join(', ')}
 
 Previously asked questions — DO NOT repeat any of these:
 ${(pastQuestions || []).map((q, i) => `${i + 1}. ${q}`).join('\n')}
 
-Respond with ONLY a raw JSON object containing the question and the primary technical or behavioral concept being tested (e.g., "Dependency Injection", "Conflict Resolution", "CAP Theorem", "Recursion").
+Respond with ONLY a raw JSON object containing the question and the primary concept being tested (e.g., "Spatial Distribution", "Conflict Resolution", "Material Selection", "Load Balancing").
 Format: {"question": "...", "concept": "..."}`
     }], { temperature: 0.75, max_tokens: 450 }, ['question', 'concept']);
 
@@ -508,7 +519,7 @@ Format: {"question": "...", "concept": "..."}`
 // ── ANSWER EVALUATION ─────────────────────────────────────
 app.post('/evaluate-answer', async (req, res) => {
   try {
-    const { question, answer, role, questionType } = req.body;
+    const { question, answer, role, questionType, domain } = req.body;
 
     // ── PRE-FLIGHT NONSENSE FILTER ──
     const fillerWords = ['um', 'uh', 'like', 'you know', 'basically', 'literally', 'sort of', 'kind of', 'i mean', 'actually', 'right', 'okay so', 'well', 'i think'];
@@ -566,10 +577,10 @@ app.post('/evaluate-answer', async (req, res) => {
         success: true,
         evaluation: {
           score: 1,
-          feedback: "The response provided contains no technical substance or is irrelevant to the technical question asked. In a professional interview, this would be graded as a failure to answer.",
+          feedback: "The response provided contains no meaningful substance or is irrelevant to the question asked. In a professional interview, this would be graded as a failure to answer.",
           ideal_answer: "A complete answer should have addressed the core requirements: " + question,
           keywords_hit: [],
-          keywords_missed: ["(Candidate provided no technical content)"],
+          keywords_missed: ["(Candidate provided no professional content)"],
           depth_level: "None",
           confidence_from_answer: "Low",
           primary_concept: "N/A"
@@ -583,6 +594,7 @@ app.post('/evaluate-answer', async (req, res) => {
 
     const isSystemDesign = (questionType || '').toLowerCase() === 'system_design';
     const isCoding = (questionType || '').toLowerCase() === 'coding';
+    const isTechDomain = ['Backend', 'Frontend', 'Full-Stack', 'Data Science', 'ML/AI', 'DevOps', 'QA', 'Embedded', 'Mobile'].includes(domain);
 
     const systemDesignPrompt = `You are an ELITE Staff-level Systems Architect conducting a system design interview.
 
@@ -633,28 +645,33 @@ Return ONLY raw JSON. Start with { end with }:
 depth_level must be one of: None, Surface, Moderate, Deep, Expert
 confidence_from_answer must be one of: Low, Medium, High`;
 
-    const standardPrompt = `You are a BRUTALLY HONEST and ELITE Senior Technical Interviewer.
-Your goal is to ensure only candidates with actual technical depth pass.
+    const persona = isTechDomain 
+      ? 'BRUTALLY HONEST and ELITE Senior Technical Interviewer' 
+      : `High-level Principal / Director in the ${domain || 'relevant'} industry`;
+
+    const standardPrompt = `You are a ${persona}.
+Your goal is to ensure only candidates with actual professional depth pass for the role of ${role}.
 
 QUESTION: ${question}
 CANDIDATE ANSWER: "${trimmedAnswer}"
 QUESTION TYPE: ${questionType || 'technical'}
+DOMAIN: ${domain || 'General'}
 
 SCORING PHILOSOPHY:
 1. CONTEXTUAL RELEVANCE IS EVERYTHING: If the candidate gives a generic "good question" or "i'll think about it" or talks about a different topic, the score MUST be 1/10.
 2. NO HALLUCINATIONS: Do not assume the candidate knows more than they wrote. If they don't explain HOW or WHY, they don't get points.
-3. IDEAL COMPARISON: Mentally construct the perfect technical answer. If the candidate's answer is less than 20% of the ideal answer's technical density, score 1-2/10.
-4. GREETINGS/FLUFF: If the answer contains greetings or fluff and NO technical content, score 1/10.
+3. INDUSTRY STANDARDS: Compare the answer to what a top-tier professional in ${domain || 'this field'} would say. If it's shallow, score low.
+4. GREETINGS/FLUFF: If the answer contains greetings or fluff and NO professional content, score 1/10.
 
 SCORING RUBRIC:
 - 1: Irrelevant, fluff, greetings, "idk", or totally off-topic.
-- 2-3: Extremely shallow. Mentions 1-2 keywords but shows zero understanding of implementation.
+- 2-3: Extremely shallow. Mentions 1-2 keywords but shows zero understanding of implementation/principles.
 - 4-5: Mediocre. Mentions correct concepts but lacks clarity or depth.
-- 6-7: Good. Correct technical explanation with minor omissions.
-- 8-10: Expert. Deep, nuanced, architecture-aware, and handles edge cases.
+- 6-7: Good. Correct professional explanation with minor omissions.
+- 8-10: Expert. Deep, nuanced, and handles industry-specific edge cases.
 
 Return ONLY raw JSON — no markdown, no prose. Start with { end with }:
-{"score":1,"feedback":"Strict technical assessment","ideal_answer":"What a perfect answer looks like","keywords_hit":["keyword1"],"keywords_missed":["concept1"],"depth_level":"None","confidence_from_answer":"Low"}
+{"score":1,"feedback":"Strict professional assessment","ideal_answer":"What a perfect answer looks like","keywords_hit":["keyword1"],"keywords_missed":["concept1"],"depth_level":"None","confidence_from_answer":"Low"}
 
 depth_level must be one of: None, Surface, Moderate, Deep, Expert
 confidence_from_answer must be one of: Low, Medium, High
