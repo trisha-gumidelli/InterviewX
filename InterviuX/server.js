@@ -267,6 +267,58 @@ async function fetchRemotiveJobs(roles, domain) {
   }
 }
 
+// ── REAL JOB FETCHING (Arbeitnow — free, no auth, global tech jobs) ──
+async function fetchArbeitnowJobs(roles, domain) {
+  const query = (roles || [])[0] || domain || 'software engineer';
+  try {
+    const url = `https://www.arbeitnow.com/api/job-board-api?search=${encodeURIComponent(query)}&page=1`;
+    const resp = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: AbortSignal.timeout(6000) });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.data || []).slice(0, 15).map(j => ({
+      id: j.slug,
+      title: j.title,
+      company_name: j.company_name,
+      company_logo: j.company_logo || '',
+      candidate_required_location: j.remote ? 'Remote' : (j.location || 'On-site'),
+      job_type: j.job_types?.[0] || 'Full-time',
+      url: j.url,
+      description: (j.description || '').replace(/<[^>]*>/g, '').slice(0, 300),
+      tags: j.tags || [],
+      _source: 'arbeitnow'
+    }));
+  } catch (e) {
+    console.warn('⚠ Arbeitnow API unavailable:', e.message);
+    return [];
+  }
+}
+
+// ── REAL JOB FETCHING (Jobicy — free remote jobs, no auth) ──
+async function fetchJobicyJobs(roles, domain) {
+  const query = (roles || [])[0] || domain || 'software';
+  try {
+    const url = `https://jobicy.com/api/v2/remote-jobs?tag=${encodeURIComponent(query)}&count=10`;
+    const resp = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: AbortSignal.timeout(6000) });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.jobs || []).slice(0, 10).map(j => ({
+      id: j.id,
+      title: j.jobTitle,
+      company_name: j.companyName,
+      company_logo: j.companyLogo || '',
+      candidate_required_location: 'Remote',
+      job_type: j.jobType || 'Full-time',
+      url: j.url,
+      description: (j.jobDescription || '').replace(/<[^>]*>/g, '').slice(0, 300),
+      tags: j.jobIndustry ? [j.jobIndustry] : [],
+      _source: 'jobicy'
+    }));
+  } catch (e) {
+    console.warn('⚠ Jobicy API unavailable:', e.message);
+    return [];
+  }
+}
+
 function hashColor(str) {
   let h = 0;
   for (const c of (str || '')) h = c.charCodeAt(0) + ((h << 5) - h);
@@ -311,20 +363,34 @@ app.post('/job-recommendations', async (req, res) => {
   try {
     const { roles, skills, seniority, domain, years_experience } = req.body;
 
-    // Step 1: Fetch real live job postings from Remotive (free API)
-    const realJobs = await fetchRemotiveJobs(roles, domain);
-    console.log(`✓ Remotive returned ${realJobs.length} live jobs`);
+    // Step 1: Fetch live jobs from ALL 3 sources in parallel
+    const [remotiveJobs, arbeitnowJobs, jobicyJobs] = await Promise.all([
+      fetchRemotiveJobs(roles, domain),
+      fetchArbeitnowJobs(roles, domain),
+      fetchJobicyJobs(roles, domain)
+    ]);
+    console.log(`✓ Sources: Remotive=${remotiveJobs.length}, Arbeitnow=${arbeitnowJobs.length}, Jobicy=${jobicyJobs.length}`);
+
+    // Deduplicate by title+company, prefer real salary data
+    const seen = new Set();
+    const realJobs = [...remotiveJobs, ...arbeitnowJobs, ...jobicyJobs].filter(j => {
+      const key = `${(j.title || '').toLowerCase().trim()}|${(j.company_name || '').toLowerCase().trim()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    console.log(`✓ Combined deduplicated pool: ${realJobs.length} jobs`);
 
     if (realJobs.length >= 3) {
       // Step 2: Have LLM rank & annotate real jobs against the candidate profile
-      const jobsList = realJobs.slice(0, 15).map((j, i) =>
+      const jobsList = realJobs.slice(0, 20).map((j, i) =>
         `JOB_${i + 1}: "${j.title}" at ${j.company_name} | Tags: ${(j.tags || []).slice(0, 5).join(', ')}`
       ).join('\n');
 
       const ranked = await groqChatJSON([{
         role: 'user',
-        content: `You are a career coach. Match this candidate to real job listings.\nCandidate: ${seniority || 'Mid'} ${domain || 'Backend'} | Roles: ${(roles || []).slice(0, 2).join(', ')} | Skills: ${(skills || []).slice(0, 7).join(', ')} | ${years_experience || 2} yrs exp\n\nListings:\n${jobsList}\n\nPick the 6 best-fitting jobs. For each: job_number (integer), match_score (60-95), why_it_fits (1 sentence), required_skills (3 items), missing_skills (1-2 items).\nReturn ONLY raw JSON — no markdown, no prose. Start with { end with }:\n{"selected":[{"job_number":1,"match_score":87,"why_it_fits":"...","required_skills":["s1","s2","s3"],"missing_skills":["s1"]}]}`
-      }], { temperature: 0.3, max_tokens: 900 }, ['selected']);
+        content: `You are a career coach. Match this candidate to real job listings.\nCandidate: ${seniority || 'Mid'} ${domain || 'Backend'} | Roles: ${(roles || []).slice(0, 2).join(', ')} | Skills: ${(skills || []).slice(0, 7).join(', ')} | ${years_experience || 2} yrs exp\n\nListings:\n${jobsList}\n\nPick the 8 best-fitting jobs from multiple sources. For each: job_number (integer), match_score (60-95), why_it_fits (1 sentence), required_skills (3 items), missing_skills (1-2 items).\nReturn ONLY raw JSON — no markdown, no prose. Start with { end with }:\n{"selected":[{"job_number":1,"match_score":87,"why_it_fits":"...","required_skills":["s1","s2","s3"],"missing_skills":["s1"]}]}`
+      }], { temperature: 0.3, max_tokens: 1100 }, ['selected']);
       const jobs = (ranked.selected || []).map(s => {
         const r = realJobs[s.job_number - 1];
         if (!r) return null;
@@ -494,9 +560,35 @@ app.post('/evaluate-answer', async (req, res) => {
     const answerWords = (answer || '').trim().split(/\s+/).filter(Boolean);
     const trimmedAnswer = answerWords.length > 500 ? answerWords.slice(0, 500).join(' ') + ' [truncated to 500 words]' : answer;
 
-    const evaluation = await groqChatJSON([{
-      role: 'user',
-      content: `You are a BRUTALLY HONEST and ELITE Senior Technical Interviewer. 
+    const isSystemDesign = (questionType || '').toLowerCase() === 'system_design';
+
+    const systemDesignPrompt = `You are an ELITE Staff-level Systems Architect conducting a system design interview.
+
+QUESTION: ${question}
+CANDIDATE ANSWER: "${trimmedAnswer}"
+
+SYSTEM DESIGN SCORING RUBRIC (evaluate each dimension and compute a weighted score):
+1. Requirements Clarification (15%): Did they clarify functional/non-functional requirements? Scale targets (DAU, QPS)?
+2. High-Level Design (20%): Clear component diagram described? API boundaries, services, clients?
+3. Data Modelling (15%): Appropriate schema, SQL vs NoSQL reasoning, indexing strategy?
+4. Scalability (20%): Load balancing, horizontal scaling, sharding, CDN, stateless services?
+5. Bottleneck Identification (15%): Read/write heavy? Single points of failure? How to mitigate?
+6. Trade-offs (15%): CAP theorem awareness? Consistency vs availability reasoning? Explicit trade-off statements?
+
+SCORE GUIDE:
+- 1-2: No architecture discussion. Generic or off-topic.
+- 3-4: Mentions 1-2 components but no coherent design.
+- 5-6: Reasonable design but missing scalability or trade-offs.
+- 7-8: Solid design covering most dimensions with clear reasoning.
+- 9-10: Excellent — covers all 6 dimensions, discusses trade-offs, mentions specific technologies with justification.
+
+Return ONLY raw JSON. Start with { end with }:
+{"score":6,"feedback":"Specific dimension-by-dimension assessment","ideal_answer":"What a Staff-level ideal answer covers","keywords_hit":["load balancer","sharding"],"keywords_missed":["CAP theorem","CDN"],"depth_level":"Moderate","confidence_from_answer":"Medium","primary_concept":"System Design"}
+
+depth_level must be one of: None, Surface, Moderate, Deep, Expert
+confidence_from_answer must be one of: Low, Medium, High`;
+
+    const standardPrompt = `You are a BRUTALLY HONEST and ELITE Senior Technical Interviewer.
 Your goal is to ensure only candidates with actual technical depth pass.
 
 QUESTION: ${question}
@@ -522,7 +614,11 @@ Return ONLY raw JSON — no markdown, no prose. Start with { end with }:
 depth_level must be one of: None, Surface, Moderate, Deep, Expert
 confidence_from_answer must be one of: Low, Medium, High
 
-In addition to the standard fields, include "primary_concept" which identifies the core concept the candidate's answer addressed (or failed to address).`
+In addition to the standard fields, include "primary_concept" which identifies the core concept the candidate's answer addressed (or failed to address).`;
+
+    const evaluation = await groqChatJSON([{
+      role: 'user',
+      content: isSystemDesign ? systemDesignPrompt : standardPrompt
     }], { temperature: 0, max_tokens: 1500 }, ['score', 'feedback', 'ideal_answer']);
     res.json({ success: true, evaluation });
   } catch (err) {

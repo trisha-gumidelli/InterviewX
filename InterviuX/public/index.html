@@ -1439,6 +1439,102 @@
     .report-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
     @media(max-width:650px) { .report-grid { grid-template-columns: 1fr; } }
     @media(max-width:600px) { #jobsGrid { grid-template-columns: 1fr; } }
+
+    /* ─── REAL-TIME COACHING PANEL ─── */
+    .coaching-panel {
+      background: rgba(6,182,212,0.05);
+      border: 1px solid rgba(6,182,212,0.22);
+      border-radius: 14px;
+      padding: .85rem 1rem;
+      margin-top: .75rem;
+      animation: fadeIn .3s ease
+    }
+    .coaching-header {
+      display: flex;
+      align-items: center;
+      gap: .45rem;
+      font-size: .62rem;
+      font-family: var(--mono);
+      color: var(--teal2);
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      margin-bottom: .65rem
+    }
+    .coaching-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--teal);
+      box-shadow: 0 0 6px rgba(6,182,212,0.7);
+      animation: blink 1.2s infinite
+    }
+    .coaching-hint {
+      display: flex;
+      align-items: flex-start;
+      gap: .55rem;
+      font-size: .8rem;
+      padding: .3rem 0;
+      border-bottom: 1px solid rgba(6,182,212,0.08);
+      line-height: 1.5;
+      transition: all .3s
+    }
+    .coaching-hint:last-child { border-bottom: none }
+    .coaching-hint .hi { font-size: .95rem; flex-shrink: 0; line-height: 1.4 }
+    .coaching-hint.good { color: var(--green2) }
+    .coaching-hint.warn { color: var(--yellow2) }
+    .coaching-hint.tip  { color: var(--teal2) }
+    .coaching-hint.fire { color: var(--coral2) }
+
+    /* ─── CODE EDITOR ─── */
+    .code-editor-panel {
+      background: #0a0a1a;
+      border: 1px solid rgba(139,92,246,0.3);
+      border-radius: 14px;
+      overflow: hidden;
+      margin-top: .75rem
+    }
+    .code-editor-header {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      padding: .6rem 1rem;
+      background: rgba(139,92,246,0.08);
+      border-bottom: 1px solid rgba(139,92,246,0.2)
+    }
+    .code-lang-select {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 7px;
+      padding: .25rem .6rem;
+      font-size: .75rem;
+      font-family: var(--mono);
+      color: var(--text2);
+      cursor: pointer;
+      outline: none
+    }
+    .code-lang-select option { background: var(--surface2) }
+    .code-editor-label {
+      font-size: .62rem;
+      font-family: var(--mono);
+      color: var(--purple2);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      flex: 1
+    }
+    .code-textarea {
+      width: 100%;
+      min-height: 180px;
+      background: transparent;
+      border: none;
+      padding: 1rem;
+      color: #e0e0ff;
+      font-family: var(--mono);
+      font-size: .82rem;
+      resize: vertical;
+      line-height: 1.65;
+      outline: none;
+      tab-size: 2
+    }
+    .code-textarea::placeholder { color: var(--muted) }
   </style>
 </head>
 
@@ -1641,6 +1737,35 @@
 
             <div class="transcript-box" id="transcriptBox">
               <span style="color:var(--muted)">Live transcript: </span><span id="transcriptText"></span>
+            </div>
+
+            <!-- Real-time coaching panel — appears during recording -->
+            <div class="coaching-panel" id="coachingPanel" style="display:none">
+              <div class="coaching-header">
+                <div class="coaching-dot"></div>
+                Live Coaching
+              </div>
+              <div id="coachingHints">
+                <div class="coaching-hint tip"><span class="hi">🎤</span><span>Listening... start speaking to get live tips.</span></div>
+              </div>
+            </div>
+
+            <!-- Code editor — shown for Coding questions -->
+            <div class="code-editor-panel" id="codeEditorPanel" style="display:none">
+              <div class="code-editor-header">
+                <span class="code-editor-label">💻 Code Editor</span>
+                <select class="code-lang-select" id="codeLangSelect">
+                  <option value="python">Python</option>
+                  <option value="javascript">JavaScript</option>
+                  <option value="java">Java</option>
+                  <option value="cpp">C++</option>
+                  <option value="go">Go</option>
+                </select>
+                <button class="btn sm ghost" onclick="clearCode()" style="padding:.25rem .65rem;font-size:.72rem">Clear</button>
+              </div>
+              <textarea class="code-textarea" id="codeInput"
+                placeholder="// Write your code solution here&#10;// Your code will be evaluated alongside your verbal explanation"
+                onkeydown="handleCodeTab(event)"></textarea>
             </div>
           </div>
 
@@ -1903,6 +2028,7 @@
       consecutiveLowScores: 0,
       topicsCovered: [],
       postureSamples: [],
+      coachingInterval: null,
     };
 
     // ═══════════════════════════════════════════════════════
@@ -2050,7 +2176,9 @@
       document.querySelectorAll('[data-qtype]').forEach(b => {
         b.className = b.dataset.qtype === type ? 'btn sm' : 'btn sm ghost';
       });
-      
+      const codePanel = document.getElementById('codeEditorPanel');
+      if (codePanel) codePanel.style.display = type === 'coding' ? 'block' : 'none';
+
       // If in an active interview, regenerate the current question with the new type
       if (document.getElementById('interviewSection').style.display === 'block' && state.questionCount > 0) {
         fetchNextQuestion(true);
@@ -2209,7 +2337,7 @@
     async function submitAnswer() {
       const answer = document.getElementById('answerInput').value.trim();
       if (!answer) return;
-      const finalAnswer = answer;
+      const finalAnswer = answer + getCodeSubmission();
       const totalWords = finalAnswer.split(/\s+/).filter(Boolean).length;
 
       if (totalWords > 500) {
@@ -2529,6 +2657,7 @@
     }
 
     function nextQuestion() {
+      clearCode();
       fetchNextQuestion();
     }
 
@@ -2733,6 +2862,130 @@
     // ═══════════════════════════════════════════════════════
     const FILLER_WORDS = ['um', 'uh', 'like', 'you know', 'basically', 'literally', 'sort of', 'kind of', 'i mean', 'actually', 'right', 'okay so'];
 
+    // ═══════════════════════════════════════════════════════
+    // REAL-TIME COACHING ENGINE
+    // ═══════════════════════════════════════════════════════
+    function startCoachingEngine() {
+      document.getElementById('coachingPanel').style.display = 'block';
+      updateCoachingHints();
+      state.coachingInterval = setInterval(updateCoachingHints, 3500);
+    }
+
+    function stopCoachingEngine() {
+      if (state.coachingInterval) {
+        clearInterval(state.coachingInterval);
+        state.coachingInterval = null;
+      }
+      document.getElementById('coachingPanel').style.display = 'none';
+    }
+
+    function updateCoachingHints() {
+      const hints = [];
+      const words = state.transcript ? state.transcript.split(/\s+/).filter(Boolean).length : 0;
+      const secs  = state.recSeconds || 0;
+      const fillers = state.fillerCount || 0;
+      const hesitations = state.hesitationCount || 0;
+      const wpm = secs > 5 ? Math.round((words / secs) * 60) : 0;
+      const qType = state.currentQuestionType;
+      const txt = (state.transcript || '').toLowerCase();
+
+      // Depth / length nudge
+      if (secs > 20 && words < 15) {
+        hints.push({ type: 'warn', icon: '📝', text: 'Answer is very short — elaborate with concrete examples or implementation details.' });
+      } else if (words >= 60 && words < 120) {
+        hints.push({ type: 'tip', icon: '💡', text: `${words} words so far. Add one more specific example or explain the "why."` });
+      } else if (words >= 120) {
+        hints.push({ type: 'good', icon: '✓', text: `Strong depth at ${words} words. Stay focused and wrap up cleanly.` });
+      }
+
+      // Filler word nudge
+      if (fillers >= 6) {
+        hints.push({ type: 'fire', icon: '⚠', text: `${fillers} filler words ("um", "uh", "like"). Pause silently instead — silence is confident.` });
+      } else if (fillers >= 3) {
+        hints.push({ type: 'warn', icon: '💬', text: `${fillers} filler words detected. Take a breath before answering each sub-point.` });
+      }
+
+      // Speaking pace
+      if (wpm > 190) {
+        hints.push({ type: 'warn', icon: '🐇', text: `Speaking very fast (${wpm} WPM). Slow down so the interviewer can follow.` });
+      } else if (wpm > 0 && wpm < 90) {
+        hints.push({ type: 'tip', icon: '🎯', text: `Pace is slow (${wpm} WPM). It's fine to speak more naturally and conversationally.` });
+      } else if (wpm >= 90 && wpm <= 175) {
+        hints.push({ type: 'good', icon: '✓', text: `Good pace (${wpm} WPM) — clear and easy to follow.` });
+      }
+
+      // Hesitations
+      if (hesitations >= 4) {
+        hints.push({ type: 'warn', icon: '⏸', text: `${hesitations} long pauses detected. Try the STAR structure to keep your answer flowing.` });
+      }
+
+      // Question-type-specific coaching
+      if (qType === 'system_design') {
+        if (!txt.match(/\b(scale|scalab|load|traffic|million|billion|request|user)\b/) && secs > 25) {
+          hints.push({ type: 'tip', icon: '🏗', text: 'Mention scale requirements first — how many users/requests per second?' });
+        } else if (!txt.match(/\b(database|db|sql|nosql|cache|redis|storage)\b/) && secs > 40) {
+          hints.push({ type: 'tip', icon: '🗄', text: 'Cover your data storage strategy — SQL vs NoSQL, caching layer.' });
+        } else if (!txt.match(/\b(api|endpoint|service|microservice|rest|grpc)\b/) && secs > 50) {
+          hints.push({ type: 'tip', icon: '🔌', text: 'Describe the API / service interface design.' });
+        }
+      }
+
+      if (qType === 'behavioral') {
+        if (!txt.match(/\b(situation|when|time|experience|i was|i had|we were)\b/) && secs > 20) {
+          hints.push({ type: 'tip', icon: '📖', text: 'STAR: Start with the Situation — "There was a time when..."' });
+        } else if (txt.match(/\b(situation|when i)\b/) && !txt.match(/\b(result|outcome|impact|learned|improved)\b/) && secs > 45) {
+          hints.push({ type: 'tip', icon: '🏁', text: 'Wrap up with the Result — what was the outcome or what did you learn?' });
+        }
+      }
+
+      if (qType === 'coding') {
+        if (!txt.match(/\b(complexity|o\(|time|space|big.?o)\b/) && secs > 30) {
+          hints.push({ type: 'tip', icon: '⚡', text: 'Mention time and space complexity (Big-O) for your approach.' });
+        }
+        if (!txt.match(/\b(edge case|null|empty|overflow|negative|duplicate)\b/) && secs > 40) {
+          hints.push({ type: 'tip', icon: '🔍', text: 'Consider edge cases: null input, empty arrays, duplicates, overflow.' });
+        }
+      }
+
+      if (qType === 'technical' && !txt.match(/\b(because|reason|why|trade.?off|advantage|disadvantage|compared)\b/) && words > 40) {
+        hints.push({ type: 'tip', icon: '🤔', text: 'Explain the "why" — trade-offs, when to use vs avoid this approach.' });
+      }
+
+      // All green
+      if (hints.length === 0 && words > 30) {
+        hints.push({ type: 'good', icon: '🔥', text: 'Excellent! Keep going — you\'re answering with good depth and clarity.' });
+      }
+
+      const el = document.getElementById('coachingHints');
+      if (!el) return;
+      el.innerHTML = hints.length
+        ? hints.slice(0, 3).map(h => `<div class="coaching-hint ${h.type}"><span class="hi">${h.icon}</span><span>${h.text}</span></div>`).join('')
+        : '<div class="coaching-hint tip"><span class="hi">🎤</span><span>Listening... start speaking to get live coaching tips.</span></div>';
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // CODE EDITOR HELPERS
+    // ═══════════════════════════════════════════════════════
+    function handleCodeTab(e) {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const ta = e.target;
+        const start = ta.selectionStart;
+        ta.value = ta.value.substring(0, start) + '  ' + ta.value.substring(ta.selectionEnd);
+        ta.selectionStart = ta.selectionEnd = start + 2;
+      }
+    }
+
+    function clearCode() { document.getElementById('codeInput').value = ''; }
+
+    function getCodeSubmission() {
+      const panel = document.getElementById('codeEditorPanel');
+      if (!panel || panel.style.display === 'none') return '';
+      const code = document.getElementById('codeInput').value.trim();
+      const lang = document.getElementById('codeLangSelect').value;
+      return code ? `\n\n[Code Submission — ${lang}]\n${code}` : '';
+    }
+
     function toggleMic() {
       if (state.isRecording) stopMic();
       else startMic();
@@ -2762,6 +3015,7 @@
       micLabel.textContent = 'Recording...';
       document.getElementById('recordingTimer').style.display = 'flex';
       document.getElementById('transcriptBox').className = 'transcript-box active';
+      startCoachingEngine();
       if (state.transcript) {
         document.getElementById('transcriptText').textContent = state.transcript + ' [continuing...]';
         document.getElementById('answerInput').value = state.transcript;
@@ -2855,6 +3109,7 @@
     }
     function stopMic() {
       state.isRecording = false;
+      stopCoachingEngine();
       if (state.recognition) { try { state.recognition.stop(); } catch (_) { } state.recognition = null; }
       if (state.recInterval) { clearInterval(state.recInterval); state.recInterval = null; }
 
@@ -2980,24 +3235,42 @@
           const centerX = box.x + box.width / 2;
           const centerY = box.y + box.height / 2;
 
-          // Posture Heuristic:
-          // Face should be in top 30-60% of frame and centered horizontally.
-          const horizontalOffset = Math.abs(centerX / vidW - 0.5);
-          const verticalPos = centerY / vidH;
-          let postureStatus = "Good ✅";
-          let postureScore = 10;
+          // Posture Heuristic (multi-factor): vertical + horizontal + distance + head tilt
+          const relX     = centerX / vidW;
+          const relY     = centerY / vidH;
+          const faceRel  = box.width / vidW;              // face-width ratio = distance proxy
+          const aspectR  = box.width / (box.height || 1); // normal human face ≈ 0.75–0.88
+          const horizOff = Math.abs(relX - 0.5);
 
-          if (verticalPos > 0.7) { postureStatus = "Slouching 📉"; postureScore = 4; }
-          else if (verticalPos < 0.2) { postureStatus = "Too High 📈"; postureScore = 6; }
-          else if (horizontalOffset > 0.25) { postureStatus = "Off-center ↔"; postureScore = 7; }
+          const issues = [];
+          if (faceRel > 0.55)                        issues.push({ s: "Too Close 🔍",   sc: 6 });
+          else if (faceRel < 0.11)                   issues.push({ s: "Too Far Back 🔙", sc: 6 });
+          if (relY > 0.68)                           issues.push({ s: "Slouching 📉",    sc: 4 });
+          else if (relY < 0.18)                      issues.push({ s: "Sitting Up ↑",    sc: 7 });
+          if (horizOff > 0.28)                       issues.push({ s: "Off-Center ↔",    sc: 7 });
+          if (aspectR > 0.97 || aspectR < 0.60)     issues.push({ s: "Head Tilted 🤔",  sc: 8 });
 
-          const eyeContact = 1 - horizontalOffset * 2;
+          let postureStatus, postureScore;
+          if (issues.length === 0) {
+            postureStatus = "Good ✅";
+            postureScore  = 10;
+          } else {
+            const worst = issues.reduce((a, b) => b.sc < a.sc ? b : a);
+            postureScore  = worst.sc;
+            postureStatus = worst.s + (issues.length > 1 ? ` +${issues.length - 1}` : '');
+          }
+
+          // Smooth posture score over last 5 samples to reduce jitter
+          state.postureSamples.push(postureScore);
+          if (state.postureSamples.length > 5) state.postureSamples.shift();
+          const smoothedPosture = state.postureSamples.reduce((a, b) => a + b, 0) / state.postureSamples.length;
+
+          const eyeContact = 1 - horizOff * 2;
           const engagementScore = Math.round((eyeContact * 0.4 + (expr.neutral + (expr.happy || 0)) * 0.6) * 10);
           const stressScore = Math.round(((expr.fearful || 0) + (expr.angry || 0) + (expr.disgusted || 0)) * 10);
-          const visualScore = Math.min(10, Math.max(1, (engagementScore + postureScore) / 2));
+          const visualScore = Math.min(10, Math.max(1, (engagementScore + smoothedPosture) / 2));
 
           state.visualReadings.push(visualScore);
-          state.postureSamples.push(postureScore);
           state.currentEngagement = visualScore;
           state.currentExpression = dominant;
 
