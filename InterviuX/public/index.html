@@ -4150,7 +4150,7 @@
 
     function updateTTSVoice(val) {
       const voices = window.speechSynthesis.getVoices();
-      state.ttsVoice = voices.find(v => v.name === val) || null;
+      state.ttsVoice = voices.find(v => v.voiceURI === val || v.name === val) || null;
     }
 
     function loadTTSVoices() {
@@ -4159,14 +4159,46 @@
         const voices = window.speechSynthesis.getVoices();
         const sel = document.getElementById('ttsVoice');
         if (!sel || !voices.length) return;
-        // Prefer English voices
+        
         const engVoices = voices.filter(v => v.lang.startsWith('en'));
-        const list = engVoices.length ? engVoices : voices;
-        sel.innerHTML = list.map(v =>
-          `<option value="${v.name}" ${v.default ? 'selected' : ''}>${v.name.replace('Microsoft ', '').replace(' - English (United States)', '')}</option>`
-        ).join('');
-        // Default to first English voice
-        if (list.length) state.ttsVoice = list.find(v => v.default) || list[0];
+        
+        const targetFemales = ["Samantha", "Victoria", "Google US English", "Google UK English Female", "Moira", "Karen"];
+        const targetMales = ["Rishi", "Alex", "Daniel", "Google UK English Male", "Fred", "Aaron"];
+        
+        const selectedFemales = [];
+        const selectedMales = [];
+        
+        for (const target of targetFemales) {
+          const v = engVoices.find(voice => voice.name.includes(target));
+          if (v && selectedFemales.length < 2 && !selectedFemales.some(existing => existing.voiceURI === v.voiceURI)) selectedFemales.push(v);
+        }
+        
+        for (const target of targetMales) {
+          const v = engVoices.find(voice => voice.name.includes(target));
+          if (v && selectedMales.length < 2 && !selectedMales.some(existing => existing.voiceURI === v.voiceURI)) selectedMales.push(v);
+        }
+        
+        let finalVoices = [...selectedFemales, ...selectedMales];
+        
+        if (finalVoices.length === 0) {
+          finalVoices = engVoices.slice(0, 4);
+        }
+
+        let defaultVoice = finalVoices.find(v => v.name.includes("Rishi")) 
+                        || selectedMales[0] 
+                        || finalVoices[0];
+
+        if (defaultVoice) {
+          state.ttsVoice = defaultVoice;
+        }
+
+        sel.innerHTML = finalVoices.map((v, i) => {
+          let label = v.name.replace('Google ', '').replace('English ', '').replace(' (United States)', '').replace(' (United Kingdom)', '').trim();
+          if (selectedFemales.includes(v)) label = `Female (${label})`;
+          else if (selectedMales.includes(v)) label = `Male (${label})`;
+          const isSelected = (v === defaultVoice) ? 'selected' : '';
+          return `<option value="${v.voiceURI}" ${isSelected}>${label}</option>`;
+        }).join('');
       };
       populate();
       window.speechSynthesis.onvoiceschanged = populate;
