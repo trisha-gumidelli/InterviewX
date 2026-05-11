@@ -55,6 +55,9 @@ cd backend && npm install && npm start
 
 For more details on agents, see **[STRUCTURE.md](STRUCTURE.md)**.
 
+## 🎥 Demo Video
+[Watch the InterviuX Demo Video](https://drive.google.com/file/d/1uVlRnsd7epcuuKKdqkv7LbCutC0CPgw8/view?usp=sharing)
+
 ---
 
 ## 🏗 Architecture & Methodology
